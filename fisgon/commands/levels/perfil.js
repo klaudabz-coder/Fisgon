@@ -5,7 +5,7 @@ const { generarImagenProgreso } = require('../../utils/canvas');
 
 module.exports = {
   data: new SlashCommandBuilder()
-    .setName('perfil-nivel')
+    .setName('perfil') // <--- CAMBIO AQUÍ: Ahora es solo "perfil"
     .setDescription('Muestra tu nivel y progreso visual, o el de otro usuario')
     .addUserOption(u => u.setName('usuario').setDescription('Usuario a consultar')),
   async execute(interaction) {
@@ -40,7 +40,7 @@ module.exports = {
 
       await interaction.reply({ embeds: [embed], files: [attachment] });
     } catch (e) {
-      console.error('Error generando imagen en comando perfil-nivel:', e);
+      console.error('Error generando imagen en comando perfil:', e);
       const porcentaje = Math.round((xpInto / Math.max(1, xpForNext)) * 100);
       const texto = `📊 **${user.tag}** — Nivel ${nivel}\nProgreso: ${porcentaje}%\nXP: ${xpInto} / ${xpForNext} (total: ${xpTotal})`;
       await interaction.reply({ content: texto });
