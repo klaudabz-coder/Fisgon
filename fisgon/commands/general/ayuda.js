@@ -28,9 +28,10 @@ module.exports = {
           name: '🃏 Cartas Coleccionables (TCG)',
           value: [
             '`/cartas-abrir` - Comprar y abrir sobres de cartas',
-            '`/cartas-album` - Ver tu colección de cartas',
+            '`/album` - Ver tu colección de cartas',
             '`/cartas-info` - Ver stats y habilidades de una carta',
-            '`/cartas-duelo` - Retar a alguien a una batalla de cartas'
+            '`/duelo` - Retar a alguien a una batalla de cartas',
+            '`/aventura` - Luchar contra NPCs y cargar el Atrapasueños'
           ].join('\n'),
           inline: false
         },
@@ -47,7 +48,7 @@ module.exports = {
           name: '🛒 Tienda y Niveles',
           value: [
             '`/tienda` - Ver y comprar artículos',
-            '`/perfil-nivel` - Ver tu nivel, XP y barra de progreso',
+            '`/perfil` - Ver tu nivel, XP y barra de progreso',
             '`/top-niveles` - Ranking de usuarios con más XP'
           ].join('\n'),
           inline: false
@@ -70,13 +71,14 @@ module.exports = {
             '`/alerta-social` - Configurar avisos de TikTok/Instagram',
             '`/autorol` - Asignar rol automático a nuevos miembros',
             '`/config-modulos` - Activar/Desactivar sistemas o restringirlos',
+            '`/config-niveles` - Ajustar la dificultad de XP',
             '`/configurar-logs` - Canal de registros',
             '`/admin-dinero` - (Admin) Dar/Quitar dinero a usuarios'
           ].join('\n'),
           inline: false
         }
       )
-      .setFooter({ text: `Versión 2.0 | Solicitado por ${interaction.user.tag}` })
+      .setFooter({ text: `Versión 2.5 | Solicitado por ${interaction.user.tag}` })
       .setTimestamp();
 
     await interaction.reply({ embeds: [embed] });

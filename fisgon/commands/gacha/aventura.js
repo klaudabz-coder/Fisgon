@@ -11,7 +11,7 @@ const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 module.exports = {
   data: new SlashCommandBuilder()
-    .setName('cartas-aventura')
+    .setName('aventura')
     .setDescription('Lucha contra NPCs para cargar tu Atrapasueños y conseguir cartas')
     .addStringOption(o => o.setName('dificultad').setDescription('Nivel del rival').addChoices(
         { name: 'Normal', value: 'normal' },
