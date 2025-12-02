@@ -5,14 +5,18 @@ const { generarImagenProgreso } = require('../../utils/canvas');
 
 module.exports = {
   data: new SlashCommandBuilder()
-    .setName('perfil') // <--- CAMBIO AQUÍ: Ahora es solo "perfil"
+    .setName('perfil')
     .setDescription('Muestra tu nivel y progreso visual, o el de otro usuario')
     .addUserOption(u => u.setName('usuario').setDescription('Usuario a consultar')),
   async execute(interaction) {
     const user = interaction.options.getUser('usuario') || interaction.user;
     const datos = db.getLevel(interaction.guild.id, user.id);
     const xpTotal = datos.xp || 0;
-    const info = xpInfoFromTotal(xpTotal);
+
+    // OBTENER CONFIG DE DB
+    const levelConfig = db.getLevelConfig(interaction.guild.id);
+
+    const info = xpInfoFromTotal(xpTotal, levelConfig); // Usamos config
     const nivel = info.level;
     const xpInto = info.xpIntoLevel;
     const xpForNext = info.xpForNext;

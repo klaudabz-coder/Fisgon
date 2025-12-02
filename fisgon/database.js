@@ -15,7 +15,8 @@ const caches = {
   tickets: new Map(),
   social_feeds: new Map(),
   quests: new Map(),
-  guild_modules: new Map() 
+  guild_modules: new Map(),
+  level_config: new Map() // <--- AÑADIDO
 };
 
 let firestore = null;
@@ -52,7 +53,8 @@ async function init() {
         loadCollectionToCache('tickets', caches.tickets, doc => doc.id),
         loadCollectionToCache('social_feeds', caches.social_feeds, doc => doc.id),
         loadCollectionToCache('quests', caches.quests, keyFromDocEconomy),
-        loadCollectionToCache('guild_modules', caches.guild_modules, doc => doc.id)
+        loadCollectionToCache('guild_modules', caches.guild_modules, doc => doc.id),
+        loadCollectionToCache('level_config', caches.level_config, doc => doc.id) // <--- AÑADIDO
       ]);
       console.log('ℹ️  [DB] Caches loaded.');
     }
@@ -123,32 +125,10 @@ module.exports = {
   setLastXpTime(guildId, userId, ts) { const key = `${guildId}_${userId}`; const cur = caches.xp_cooldowns.get(key) || { user_id: userId, guild_id: guildId, last_xp: 0 }; cur.last_xp = ts; caches.xp_cooldowns.set(key, cur); persistDoc('xp_cooldowns', key, cur); },
   addInfraction(guildId, userId, moderatorId, reason, type) { const id = `${Date.now()}_${Math.random().toString(36).slice(2,8)}`; const obj = { id, user_id: userId, guild_id: guildId, moderator_id: moderatorId, reason, type, created_at: Date.now() }; caches.infractions.set(id, obj); persistDoc('infractions', id, obj); return obj; },
   getInfractions(guildId, userId) { const out = []; for (const v of caches.infractions.values()) if (v.guild_id === guildId && v.user_id === userId) out.push(v); return out; },
-
-  // GUILD CONFIG (LOGS Y AUTOROL)
-  setLogChannel(guildId, channelId) { 
-    const cur = caches.guild_config.get(guildId) || { guild_id: guildId };
-    cur.log_channel_id = channelId;
-    caches.guild_config.set(guildId, cur); 
-    persistDoc('guild_config', guildId, cur); 
-  },
-  getLogChannel(guildId) { 
-    const r = caches.guild_config.get(guildId); 
-    return r ? r.log_channel_id : null; 
-  },
-
-  // --- AUTOROL (NUEVO) ---
-  setAutoRole(guildId, roleId) {
-    const cur = caches.guild_config.get(guildId) || { guild_id: guildId };
-    cur.autorole_id = roleId;
-    caches.guild_config.set(guildId, cur);
-    persistDoc('guild_config', guildId, cur);
-  },
-  getAutoRole(guildId) {
-    const r = caches.guild_config.get(guildId);
-    return r ? r.autorole_id : null;
-  },
-  // ------------------------
-
+  setLogChannel(guildId, channelId) { const cur = caches.guild_config.get(guildId) || { guild_id: guildId }; cur.log_channel_id = channelId; caches.guild_config.set(guildId, cur); persistDoc('guild_config', guildId, cur); },
+  getLogChannel(guildId) { const r = caches.guild_config.get(guildId); return r ? r.log_channel_id : null; },
+  setAutoRole(guildId, roleId) { const cur = caches.guild_config.get(guildId) || { guild_id: guildId }; cur.autorole_id = roleId; caches.guild_config.set(guildId, cur); persistDoc('guild_config', guildId, cur); },
+  getAutoRole(guildId) { const r = caches.guild_config.get(guildId); return r ? r.autorole_id : null; },
   addLog(guildId, tipo, contenido) { const id = `${Date.now()}_${Math.random().toString(36).slice(2,8)}`; const obj = { id, guild_id: guildId, tipo, contenido, created_at: Date.now() }; caches.logs.set(id, obj); persistDoc('logs', id, obj); },
   setTicketConfig(guildId, categoryId, supportRoleId, transcriptChannelId = null) { const obj = { guild_id: guildId, category_id: categoryId, support_role_id: supportRoleId, transcript_channel_id: transcriptChannelId, ticket_count: 0 }; caches.ticket_config.set(guildId, obj); persistDoc('ticket_config', guildId, obj); },
   getTicketConfig(guildId) { return caches.ticket_config.get(guildId) || null; },
@@ -164,5 +144,16 @@ module.exports = {
   setQuests(guildId, userId, questsData) { const key = `${guildId}_${userId}`; const obj = { guild_id: guildId, user_id: userId, ...questsData }; caches.quests.set(key, obj); persistDoc('quests', key, obj); },
   setCategoryStatus(guildId, category, enabled) { const key = `${guildId}_${category}`; const cur = caches.guild_modules.get(key) || { guild_id: guildId, category: category }; cur.enabled = enabled; caches.guild_modules.set(key, cur); persistDoc('guild_modules', key, cur); },
   setCategoryRole(guildId, category, roleId) { const key = `${guildId}_${category}`; const cur = caches.guild_modules.get(key) || { guild_id: guildId, category: category, enabled: true }; cur.required_role = roleId; caches.guild_modules.set(key, cur); persistDoc('guild_modules', key, cur); },
-  getCategoryConfig(guildId, category) { const key = `${guildId}_${category}`; return caches.guild_modules.get(key) || { enabled: true, required_role: null }; }
+  getCategoryConfig(guildId, category) { const key = `${guildId}_${category}`; return caches.guild_modules.get(key) || { enabled: true, required_role: null }; },
+
+  // --- CONFIGURACIÓN DE NIVELES (NUEVO) ---
+  setLevelConfig(guildId, base, exponent) {
+    const obj = { guild_id: guildId, base, exponent };
+    caches.level_config.set(guildId, obj);
+    persistDoc('level_config', guildId, obj);
+  },
+  getLevelConfig(guildId) {
+    // Default: Base 100, Exponente 1.5
+    return caches.level_config.get(guildId) || { base: 100, exponent: 1.5 };
+  }
 };
