@@ -20,16 +20,20 @@ module.exports = {
 
     // Lista de respuestas / trabajos aleatorios
     const listaTrabajos = [
-        "Trabajaste como programador junior arreglando bugs",
-        "Ayudaste a limpiar el parque de la ciudad",
-        "Trabajaste de repartidor de pizzas bajo la lluvia",
-        "Hiciste de guardia de seguridad en el centro comercial",
-        "Vendiste limonada en la esquina",
-        "Trabajaste de moderador de Discord",
-        "Ayudaste a una anciana a cruzar la calle",
-        "Reparaste el coche de un desconocido",
-        "Trabajaste de barista haciendo café",
-        "Fuiste asistente en una biblioteca"
+        "Ayudaste a recolectar los materiales necesarios para el Ritual del Sueño Lúcido. Ganas ${ganancia} por tu parte en el proceso.",
+        "Lograste documentar el patrón de parpadeo de una entidad espectral. Recibes ${ganancia} por tu informe para la Corporación.",
+        "Rastreaste el origen de un video maldito. El cliente te recompensa con ${ganancia} por tu discreción y hallazgo.",
+        "Pasaste tiempo en el 'Hotel del Terror' (Nivel 5). Por hacerle la limpieza al conserje invisible, te paga ${ganancia}",
+        "Lograste documentar las huellas de un ser desconocido en el bosque. El gremio de cazadores de monstruos te paga ${ganancia} por la evidencia.",
+        "Te dedicaste a escuchar los Ecos en el vacío del servidor. Lograste transcribir un mensaje y recibes ${ganancia} por el informe.",
+        "Pasaste la tarde monitoreando transmisiones cifradas en un deep web foro de horror. Encontraste un video valioso y cobras ${ganancia}",
+        "Te contrataron para reordenar las moquetas del Nivel 4 ('Oficinas Abandonadas'). El trabajo fue monótono, pero ganaste ${ganancia}",
+        "Recuperaste y digitalizaste los archivos perdidos del noticiero local sobre la leyenda del Nahual. Cobras ${ganancia} por el material.",
+        "Recuperaste un juguete maldito de una casa abandonada. Por desafiar al Poltergeist, ganas ${ganancia}",
+      "Te quedaste inmóvil observando un espejo sin reflejo por 6 horas. La Guardia Nocturna te paga ${ganancia} por tu reporte.",
+      "Lograste navegar el Nivel 1 de los Backrooms sin encontrar entidades. El esfuerzo se paga con ${ganancia} en efectivo.",
+      "Realizaste el ritual de la Mano Invisible. Tu servicio al ente te recompensa con ${ganancia} y evitas un parpadeo fatal.",
+      "Pasaste la noche monitoreando un viejo televisor con nieve. Lograste grabar una silueta y vendes la cinta a un investigador. Recibes ${ganancia}"
     ];
     // ---------------------
 
