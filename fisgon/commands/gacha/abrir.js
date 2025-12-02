@@ -1,131 +1,134 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, ComponentType } = require('discord.js');
 const db = require('../../database');
-const { itemsGacha, configRareza } = require('../../utils/gachaItems');
+const { getAvailableSets, getCardsInSet } = require('../../utils/cardRegistry');
+const { configRareza } = require('../../utils/gachaItems');
 
-// Función para esperar (delay)
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('cartas-abrir')
-    .setDescription('Compra y abre un sobre de cartas coleccionables')
-    .addIntegerOption(o => o.setName('cantidad').setDescription('Cantidad de sobres (1 o 10)').setRequired(false)),
+    .setDescription('Compra y abre sobres de cartas')
+    .addIntegerOption(o => o.setName('cantidad').setDescription('Cantidad (1 o 10)').setRequired(false)),
 
   async execute(interaction) {
-    const cantidadSobres = interaction.options.getInteger('cantidad') || 1;
-    const precioPorSobre = 100; 
-    const costoTotal = precioPorSobre * cantidadSobres;
+    const cantidad = interaction.options.getInteger('cantidad') || 1;
+    const sets = getAvailableSets(interaction.guild.id);
 
-    if (cantidadSobres !== 1 && cantidadSobres !== 10) {
-        return interaction.reply({ content: 'Solo puedes abrir 1 o 10 sobres a la vez.', ephemeral: true });
+    // Si solo hay un set (default), saltamos la selección
+    if (sets.length === 1) {
+        await procesarCompra(interaction, sets[0], cantidad);
+        return;
     }
 
-    // 1. Verificar saldo
+    // MENÚ DE SELECCIÓN DE SET
+    const options = sets.map(s => ({
+        label: s.name,
+        description: `Precio: ${s.price} monedas`,
+        value: s.id,
+        emoji: '📦'
+    }));
+
+    const row = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder().setCustomId('select_set').setPlaceholder('Elige un Set de Cartas').addOptions(options)
+    );
+
+    const msg = await interaction.reply({ content: 'Selecciona qué colección quieres abrir:', components: [row], fetchReply: true });
+
+    try {
+        const selection = await msg.awaitMessageComponent({ filter: i => i.user.id === interaction.user.id, time: 30000, componentType: ComponentType.StringSelect });
+        const setId = selection.values[0];
+        const setObj = sets.find(s => s.id === setId);
+
+        await selection.deferUpdate(); // Evita error de interacción fallida
+        await procesarCompra(interaction, setObj, cantidad, msg);
+
+    } catch (e) {
+        await interaction.editReply({ content: 'Tiempo agotado.', components: [] }).catch(()=>{});
+    }
+  }
+};
+
+async function procesarCompra(interaction, setObj, cantidad, msgExistente = null) {
+    const costoTotal = setObj.price * cantidad;
     const balance = db.getBalance(interaction.guild.id, interaction.user.id);
+
     if (balance < costoTotal) {
-        return interaction.reply({ content: `No tienes suficientes monedas. Necesitas **${costoTotal}** para estos sobres.`, ephemeral: true });
+        const text = `❌ No tienes suficientes monedas. Necesitas **${costoTotal}** para el set **${setObj.name}**.\nTienes: ${balance}.`;
+        if (msgExistente) await interaction.editReply({ content: text, components: [] });
+        else await interaction.reply({ content: text, ephemeral: true });
+        return;
     }
 
-    // 2. Cobrar y Generar Cartas
+    // Cobrar
     db.addBalance(interaction.guild.id, interaction.user.id, -costoTotal);
 
+    // Obtener cartas del set
+    const poolCartas = getCardsInSet(interaction.guild.id, setObj.id);
+    if (poolCartas.length === 0) {
+        if (msgExistente) await interaction.editReply({ content: '⚠️ Este set está vacío. Dile a un admin que añada cartas.', components: [] });
+        else await interaction.reply({ content: '⚠️ Set vacío.', ephemeral: true });
+        return;
+    }
+
+    // Generar premios
     const cartasObtenidas = [];
-    for (let i = 0; i < cantidadSobres; i++) {
+    for (let i = 0; i < cantidad; i++) {
         const rand = Math.random() * 100;
         let rareza = 'Common';
-
         if (rand <= configRareza.Legendary.chance) rareza = 'Legendary';
         else if (rand <= configRareza.Epic.chance) rareza = 'Epic';
         else if (rand <= configRareza.Rare.chance) rareza = 'Rare';
 
-        const pool = itemsGacha.filter(item => item.rarity === rareza);
-        const carta = pool[Math.floor(Math.random() * pool.length)];
+        // Filtrar por rareza dentro del set
+        let subPool = poolCartas.filter(c => c.rarity === rareza);
+        // Si no hay cartas de esa rareza en este set, cogemos cualquiera del set
+        if (subPool.length === 0) subPool = poolCartas;
 
+        const carta = subPool[Math.floor(Math.random() * subPool.length)];
         cartasObtenidas.push(carta);
         db.addToInventory(interaction.guild.id, interaction.user.id, carta.id, 1);
     }
 
-    // --- ANIMACIÓN DE APERTURA ---
+    // ANIMACIÓN
+    const embedAnim = new EmbedBuilder()
+        .setColor('#2f3136')
+        .setTitle(`Abriendo ${cantidad} sobre(s) de ${setObj.name}...`)
+        .setDescription('✂️ Rasgando envoltorios...');
 
-    // CASO A: UN SOLO SOBRE
-    if (cantidadSobres === 1) {
-        const carta = cartasObtenidas[0];
-        const info = configRareza[carta.rarity];
+    if (msgExistente) await interaction.editReply({ content: '', embeds: [embedAnim], components: [] });
+    else await interaction.reply({ embeds: [embedAnim] });
 
-        // Animación paso a paso
-        const frames = [
-            '📦 **Abriendo sobre...**\n*(Rasgas el envoltorio)*',
-            '✨ **¡Brillo misterioso!**\n*(Algo se ve dentro...)*',
-            '🃏 **¡Carta revelada!**'
-        ];
+    await wait(2000);
 
-        const embedAnim = new EmbedBuilder()
-            .setColor('#2f3136')
-            .setTitle('Tienda de Cartas')
-            .setDescription(frames[0]);
-
-        await interaction.reply({ embeds: [embedAnim], fetchReply: true });
-
-        for (let i = 1; i < frames.length; i++) {
-            await wait(1000); // 1 segundo por paso
-            embedAnim.setDescription(frames[i]);
-            await interaction.editReply({ embeds: [embedAnim] });
-        }
-
-        await wait(500);
-
-        // Resultado Final
-        const embedFinal = new EmbedBuilder()
-            .setTitle(`¡Has conseguido: ${carta.name}!`)
-            .setDescription(`**Rareza:** ${info.label} ${carta.emoji}\n\n*Guardada en tu álbum.*`)
+    // MOSTRAR RESULTADOS
+    if (cantidad === 1) {
+        const c = cartasObtenidas[0];
+        const info = configRareza[c.rarity];
+        const finalEmbed = new EmbedBuilder()
+            .setTitle(`¡Conseguiste: ${c.name}!`)
+            .setDescription(`**${info.label}** ${c.emoji}\nSet: ${setObj.name}`)
             .setColor(info.color)
-            .setFooter({ text: `Costo: ${costoTotal} monedas` });
+            .setFooter({ text: `Costo: ${costoTotal}` });
 
-        if (carta.image) embedFinal.setImage(carta.image); // Muestra la carta en grande
-
-        // Tracking de misiones
-        try {
-             const { trackQuest, QUEST_TYPES } = require('../../utils/quests');
-             trackQuest(interaction.guild.id, interaction.user.id, QUEST_TYPES.GACHA, 1);
-        } catch(e) {}
-
-        return interaction.editReply({ embeds: [embedFinal] });
-    } 
-
-    // CASO B: CAJA DE 10 SOBRES
-    else {
-        const embedBox = new EmbedBuilder()
-            .setTitle('📦 Abriendo caja de sobres...')
-            .setColor('#2f3136')
-            .setDescription('✂️ Rasgando envoltorios...');
-
-        await interaction.reply({ embeds: [embedBox], fetchReply: true });
-
-        await wait(2000); 
-
-        // Resumen
-        let descripcion = '';
+        if (c.image) finalEmbed.setImage(c.image);
+        await interaction.editReply({ embeds: [finalEmbed] });
+    } else {
+        // Multi
+        let desc = '';
         const orden = { 'Legendary': 0, 'Epic': 1, 'Rare': 2, 'Common': 3 };
         cartasObtenidas.sort((a, b) => orden[a.rarity] - orden[b.rarity]);
 
         cartasObtenidas.forEach(c => {
-            const label = configRareza[c.rarity].label;
-            descripcion += `🃏 **${c.name}** — ${label}\n`;
+            desc += `${c.emoji} **${c.name}** (${configRareza[c.rarity].label})\n`;
         });
 
-        const embedFinal = new EmbedBuilder()
-            .setTitle(`🎁 Contenido de la Caja (10 sobres)`)
-            .setDescription(descripcion)
+        const finalEmbed = new EmbedBuilder()
+            .setTitle(`Contenido de ${cantidad} sobres`)
+            .setDescription(desc)
             .setColor('#2F3136')
-            .setFooter({ text: `Todas las cartas se han guardado.` });
+            .setFooter({ text: `Set: ${setObj.name}` });
 
-        // Tracking
-        try {
-             const { trackQuest, QUEST_TYPES } = require('../../utils/quests');
-             trackQuest(interaction.guild.id, interaction.user.id, QUEST_TYPES.GACHA, 10);
-        } catch(e) {}
-
-        return interaction.editReply({ embeds: [embedFinal] });
+        await interaction.editReply({ embeds: [finalEmbed] });
     }
-  }
-};
+}
