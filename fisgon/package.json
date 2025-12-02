@@ -1,0 +1,18 @@
+{
+  "name": "fisgon-bot",
+  "version": "1.0.0",
+  "description": "Bot Discord en Español",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "@discordjs/rest": "^2.2.0",
+    "dotenv": "^16.3.1",
+    "firebase-admin": "^12.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
