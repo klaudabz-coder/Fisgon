@@ -4,58 +4,41 @@ const { itemsGacha, configRareza } = require('../../utils/gachaItems');
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('cartas-info')
-    .setDescription('Muestra las estadísticas completas y habilidades de una carta')
-    .addStringOption(option => 
-        option.setName('carta')
-            .setDescription('Escribe el nombre de la carta')
-            .setRequired(true)
-            .setAutocomplete(true) // ¡Esto activa las sugerencias!
-    ),
+    .setDescription('Muestra las estadísticas detalladas de una carta')
+    .addStringOption(option => option.setName('carta').setDescription('Nombre').setRequired(true).setAutocomplete(true)),
 
-  // Esta función maneja las sugerencias mientras escribes
   async autocomplete(interaction) {
     const focusedValue = interaction.options.getFocused().toLowerCase();
-
-    // Filtramos las cartas que coinciden con lo que escribes
-    const filtered = itemsGacha.filter(item => 
-        item.name.toLowerCase().includes(focusedValue)
-    );
-
-    // Discord solo permite mostrar 25 opciones máximo
-    await interaction.respond(
-      filtered.slice(0, 25).map(item => ({ name: item.name, value: item.id }))
-    );
+    const filtered = itemsGacha.filter(item => item.name.toLowerCase().includes(focusedValue));
+    await interaction.respond(filtered.slice(0, 25).map(item => ({ name: item.name, value: item.id })));
   },
 
   async execute(interaction) {
     const cartaId = interaction.options.getString('carta');
-
-    // Buscamos la carta por ID (que viene del autocompletado) o por nombre
     const carta = itemsGacha.find(c => c.id === cartaId || c.name.toLowerCase() === cartaId.toLowerCase());
 
-    if (!carta) {
-        return interaction.reply({ content: '❌ Carta no encontrada.', ephemeral: true });
-    }
+    if (!carta) return interaction.reply({ content: '❌ Carta no encontrada.', ephemeral: true });
 
     const infoRareza = configRareza[carta.rarity];
-
-    // Verificar si la carta tiene stats (por si acaso quedó alguna vieja sin actualizar)
-    const stats = carta.stats || { hp: '?', atk: '?', def: '?', spd: '?' };
-    const ability = carta.ability || { name: 'Desconocida', desc: 'Sin datos' };
-
     const embed = new EmbedBuilder()
         .setTitle(`${carta.emoji} ${carta.name}`)
-        .setDescription(`**Rareza:** ${infoRareza.label}`)
-        .setColor(infoRareza.color)
-        .addFields(
-            { name: '❤️ Vida (HP)', value: `${stats.hp}`, inline: true },
-            { name: '⚔️ Ataque (ATK)', value: `${stats.atk}`, inline: true },
-            { name: '🛡️ Defensa (DEF)', value: `${stats.def}`, inline: true },
-            { name: '💨 Velocidad (SPD)', value: `${stats.spd}`, inline: true },
-            { name: '✨ Habilidad Especial', value: `**${ability.name}**\n*${ability.desc}*`, inline: false }
-        );
+        .setDescription(`**Rol:** ${carta.role === 'fighter' ? '⚔️ Luchador' : '🔮 Soporte'}\n**Rareza:** ${infoRareza.label}`)
+        .setColor(infoRareza.color);
 
     if (carta.image) embed.setThumbnail(carta.image);
+
+    if (carta.role === 'fighter') {
+        embed.addFields(
+            { name: 'Estadísticas', value: `❤️ HP: ${carta.stats.hp}\n⚔️ ATK: ${carta.stats.atk}\n🛡️ DEF: ${carta.stats.def}\n💨 SPD: ${carta.stats.spd}`, inline: false },
+            { name: 'Habilidades', value: carta.skills.map(s => `🔹 **${s.name}** (CD: ${s.cd}): ${s.desc}`).join('\n'), inline: false }
+        );
+    } else {
+        // Es Soporte
+        const a = carta.assist;
+        embed.addFields(
+            { name: 'Habilidad de Apoyo', value: `✨ **${a.name}** (CD: ${a.cd})\n${a.desc}`, inline: false }
+        );
+    }
 
     await interaction.reply({ embeds: [embed] });
   }

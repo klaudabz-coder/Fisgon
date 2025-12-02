@@ -2,269 +2,356 @@ const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, StringSelectMenuBui
 const db = require('../../database');
 const { itemsGacha, configRareza } = require('../../utils/gachaItems');
 
-// Configuración
-const TIEMPO_SELECCION = 60000; 
-const TIEMPO_TURNO = 60000;
+const TIEMPO_TURNO = 120000; 
 const RECOMPENSA_BASE = 50; 
-
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 module.exports = {
   data: new SlashCommandBuilder()
-    .setName('aventura')
-    .setDescription('Lucha contra NPCs para cargar tu Atrapasueños y conseguir cartas')
-    .addStringOption(o => o.setName('dificultad').setDescription('Nivel del rival').addChoices(
-        { name: 'Normal', value: 'normal' },
-        { name: 'Difícil (Más carga y monedas)', value: 'hard' }
-    )),
+    .setName('cartas-aventura')
+    .setDescription('Forma un equipo (Luchador + Soporte) y explora')
+    .addStringOption(o => o.setName('dificultad').setDescription('Nivel del rival').addChoices({ name: 'Normal', value: 'normal' }, { name: 'Difícil', value: 'hard' })),
 
   async execute(interaction) {
     const dificultad = interaction.options.getString('dificultad') || 'normal';
     const user = interaction.user;
-
     const inv = db.getInventory(interaction.guild.id, user.id);
-    const misCartas = getFightersFromInv(inv);
 
-    if (misCartas.length === 0) {
-        return interaction.reply({ content: 'No tienes cartas para pelear. Usa `/cartas-abrir` primero.', ephemeral: true });
-    }
+    const fighters = getCardsByRole(inv, 'fighter');
+    const supports = getCardsByRole(inv, 'support');
 
-    const rowSelect = new ActionRowBuilder().addComponents(createSelectMenu('p1_select', misCartas));
+    if (fighters.length === 0) return interaction.reply({ content: '❌ Necesitas al menos una carta de tipo **LUCHADOR**.', ephemeral: true });
 
-    // Mostramos la carga actual en el mensaje inicial
+    // FASE 1: LUCHADOR
+    const rowFighter = new ActionRowBuilder().addComponents(createSelectMenu('sel_fighter', fighters, 'Elige tu LUCHADOR principal'));
     const cargaActual = db.getAdventureCharge(interaction.guild.id, user.id);
 
-    const msgInicial = await interaction.reply({ 
-        content: `⚔️ **Modo Aventura**\n🕸️ **Atrapasueños:** ${cargaActual}%\nSelecciona tu carta para salir a explorar.`, 
-        components: [rowSelect],
+    const msg = await interaction.reply({ 
+        content: `⚔️ **Modo Aventura** (Carga: ${cargaActual}%)\n🛡️ **Fase 1:** Selecciona quién peleará al frente.`, 
+        components: [rowFighter],
         fetchReply: true
     });
 
-    const enemigoBase = itemsGacha[Math.floor(Math.random() * itemsGacha.length)];
-    const buff = dificultad === 'hard' ? 1.5 : 1.0;
-
-    const npc = {
-        id: enemigoBase.id,
-        name: `NPC ${enemigoBase.name}`,
-        emoji: enemigoBase.emoji,
-        image: enemigoBase.image,
-        maxHp: Math.floor(enemigoBase.stats.hp * buff),
-        currentHp: Math.floor(enemigoBase.stats.hp * buff),
-        stats: {
-            atk: Math.floor(enemigoBase.stats.atk * buff),
-            def: Math.floor(enemigoBase.stats.def * buff),
-            spd: Math.floor(enemigoBase.stats.spd * buff)
-        },
-        ability: enemigoBase.ability,
-        defMod: 0,
-        isNpc: true
-    };
-
-    const filter = i => i.user.id === user.id && i.customId === 'p1_select';
+    const filter = i => i.user.id === user.id;
+    let fighterItem, supportItem;
 
     try {
-        const seleccion = await msgInicial.awaitMessageComponent({ filter, time: TIEMPO_SELECCION, componentType: ComponentType.StringSelect });
-        const charId = seleccion.values[0];
-        const baseChar = itemsGacha.find(c => c.id === charId);
+        const sel1 = await msg.awaitMessageComponent({ filter, componentType: ComponentType.StringSelect, time: 60000 });
+        fighterItem = itemsGacha.find(c => c.id === sel1.values[0]);
+        await sel1.deferUpdate();
 
-        const jugador = {
-            ...baseChar,
-            maxHp: baseChar.stats.hp,
-            currentHp: baseChar.stats.hp,
-            defMod: 0,
-            user: user
-        };
+        // FASE 2: SOPORTE
+        if (supports.length > 0) {
+            const rowSupport = new ActionRowBuilder().addComponents(createSelectMenu('sel_support', supports, 'Elige tu SOPORTE (Opcional)'));
+            await msg.edit({ content: `✅ Luchador: **${fighterItem.name}**\n🔮 **Fase 2:** Elige una carta de apoyo.`, components: [rowSupport] });
 
-        await seleccion.update({ content: `Has elegido a **${jugador.name}**. ¡Un **${npc.name}** salvaje apareció!`, components: [] });
-        await iniciarBatallaPvE(msgInicial, jugador, npc, dificultad, interaction);
+            try {
+                const sel2 = await msg.awaitMessageComponent({ filter, componentType: ComponentType.StringSelect, time: 60000 });
+                supportItem = itemsGacha.find(c => c.id === sel2.values[0]);
+                await sel2.deferUpdate();
+            } catch (e) { }
+        }
+
+        // INICIAR
+        const allNpcOptions = itemsGacha.filter(c => c.role === 'fighter');
+        const npcCard = allNpcOptions[Math.floor(Math.random() * allNpcOptions.length)];
+
+        await iniciarCombate(msg, user, fighterItem, supportItem, npcCard, dificultad, interaction);
 
     } catch (e) {
-        // console.error(e);
-        await interaction.editReply({ content: '⏳ Te tardaste mucho en prepararte. El enemigo huyó.', components: [] }).catch(()=>{});
+        console.log(e);
+        await interaction.editReply({ content: 'Tiempo agotado.', components: [] }).catch(()=>{});
     }
   }
 };
 
-async function iniciarBatallaPvE(message, player, npc, dificultad, interaction) {
-    let turno = 1;
-    let logBatalla = '¡El combate ha comenzado!';
-    let finalizado = false;
+async function iniciarCombate(message, user, fighterCard, supportCard, npcCard, dificultad, interaction) {
+    const buff = dificultad === 'hard' ? 1.5 : 1.0;
 
-    const getEmbed = () => {
-        const hpPctPlayer = Math.max(0, Math.floor((player.currentHp / player.maxHp) * 10));
-        const hpPctNpc = Math.max(0, Math.floor((npc.currentHp / npc.maxHp) * 10));
-
-        const barPlayer = '🟩'.repeat(hpPctPlayer) + '⬛'.repeat(10 - hpPctPlayer);
-        const barNpc = '🟥'.repeat(hpPctNpc) + '⬛'.repeat(10 - hpPctNpc);
-
-        return new EmbedBuilder()
-            .setTitle(`⚔️ Aventura: ${player.name} vs ${npc.name}`)
-            .setDescription(logBatalla)
-            .addFields(
-                { name: `${player.emoji} Tú (${player.currentHp}/${player.maxHp})`, value: `\`${barPlayer}\``, inline: true },
-                { name: `💀 Rival (${npc.currentHp}/${npc.maxHp})`, value: `\`${barNpc}\``, inline: true }
-            )
-            .setColor(dificultad === 'hard' ? '#ff0000' : '#0099ff')
-            .setFooter({ text: `Turno ${turno}` });
+    // Inicializar Jugador
+    const player = {
+        name: fighterCard.name,
+        stats: { ...fighterCard.stats },
+        maxHp: fighterCard.stats.hp,
+        currentHp: fighterCard.stats.hp,
+        skills: fighterCard.skills.map(s => ({ ...s, currentCd: 0 })), 
+        buffs: { atk: 0, def: 0 },
+        shield: 0
     };
 
-    const getRow = (disabled = false) => new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('atq').setLabel('Atacar').setStyle(ButtonStyle.Primary).setEmoji('🗡️').setDisabled(disabled),
-        new ButtonBuilder().setCustomId('hab').setLabel('Habilidad').setStyle(ButtonStyle.Secondary).setEmoji('✨').setDisabled(disabled),
-        new ButtonBuilder().setCustomId('huir').setLabel('Huir').setStyle(ButtonStyle.Danger).setEmoji('🏃').setDisabled(disabled)
-    );
+    // Inicializar Soporte
+    const support = supportCard ? {
+        name: supportCard.name,
+        skill: { ...supportCard.assist, currentCd: 0 }
+    } : null;
 
-    await message.edit({ embeds: [getEmbed()], components: [getRow()] });
+    // Inicializar NPC
+    const npc = {
+        name: `NPC ${npcCard.name}`,
+        stats: { 
+            hp: Math.floor(npcCard.stats.hp * buff),
+            atk: Math.floor(npcCard.stats.atk * buff),
+            def: Math.floor(npcCard.stats.def * buff),
+            spd: Math.floor(npcCard.stats.spd * buff)
+        },
+        maxHp: Math.floor(npcCard.stats.hp * buff),
+        currentHp: Math.floor(npcCard.stats.hp * buff),
+        skills: npcCard.skills.map(s => ({ ...s, currentCd: 0 })),
+        buffs: { atk: 0, def: 0 },
+        shield: 0
+    };
 
-    while (!finalizado) {
+    let turno = 1;
+    let log = `¡**${player.name}** (con ${support ? support.name : 'nadie'}) se enfrenta a **${npc.name}**!`;
+    let batallaActiva = true;
+
+    while (batallaActiva) {
+
+        // --- 1. DIBUJAR INTERFAZ ---
+        const embed = new EmbedBuilder()
+            .setTitle(`Combate - Turno ${turno}`)
+            .setDescription(log)
+            .setColor(dificultad === 'hard' ? '#FF4444' : '#44FF44')
+            .addFields(
+                { name: `🟢 ${player.name}`, value: `HP: ${player.currentHp}/${player.maxHp} ${player.shield > 0 ? `🛡️${player.shield}` : ''}\nATK: ${player.stats.atk + player.buffs.atk} DEF: ${player.stats.def + player.buffs.def}`, inline: true },
+                { name: `🔴 ${npc.name}`, value: `HP: ${npc.currentHp}/${npc.maxHp} ${npc.shield > 0 ? `🛡️${npc.shield}` : ''}`, inline: true }
+            );
+
+        // --- BOTONES DINÁMICOS CON STATS ---
+        const rowSkills = new ActionRowBuilder();
+
+        player.skills.forEach((skill, index) => {
+            let labelInfo = "";
+            const currentAtk = player.stats.atk + player.buffs.atk;
+
+            // Calcular info visual para el botón
+            if (skill.type === 'dmg' || skill.type === 'pierce' || skill.type === 'magic') {
+                const dmgEst = Math.floor(currentAtk * skill.power);
+                labelInfo = `⚔️~${dmgEst}`;
+            } else if (skill.type === 'heal') {
+                labelInfo = `❤️+${skill.power}`;
+            } else if (skill.type === 'shield') {
+                labelInfo = `🛡️+${skill.power}`;
+            } else if (skill.type.startsWith('buff')) {
+                labelInfo = `✨+${skill.power}`;
+            }
+
+            const cdText = skill.currentCd > 0 ? ` ⏳${skill.currentCd}` : '';
+            // Construir Label: "Nombre [Stats] CD"
+            const finalLabel = `${skill.name} [${labelInfo}]${cdText}`;
+
+            rowSkills.addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`skill_${index}`)
+                    .setLabel(finalLabel)
+                    .setStyle(skill.currentCd > 0 ? ButtonStyle.Secondary : ButtonStyle.Primary)
+                    .setDisabled(skill.currentCd > 0)
+            );
+        });
+
+        // Botón de Soporte
+        if (support) {
+            const sSkill = support.skill;
+            let labelInfo = "";
+            if (sSkill.type === 'heal') labelInfo = `❤️+${sSkill.power}`;
+            else if (sSkill.type === 'shield') labelInfo = `🛡️+${sSkill.power}`;
+            else if (sSkill.type.startsWith('buff')) labelInfo = `✨+${sSkill.power}`;
+            else if (sSkill.type === 'reduce_cd') labelInfo = `⬇️CD`;
+            else labelInfo = `🔮`;
+
+            const cdText = sSkill.currentCd > 0 ? ` ⏳${sSkill.currentCd}` : '';
+            const finalLabel = `${support.name} [${labelInfo}]${cdText}`;
+
+            rowSkills.addComponents(
+                new ButtonBuilder()
+                    .setCustomId('support_assist')
+                    .setLabel(finalLabel)
+                    .setStyle(ButtonStyle.Success)
+                    .setDisabled(sSkill.currentCd > 0)
+            );
+        }
+
+        await message.edit({ content: '', embeds: [embed], components: [rowSkills] });
+
+        // --- 2. TURNO JUGADOR ---
         try {
-            const filter = i => i.user.id === player.user.id;
-            const iPlayer = await message.awaitMessageComponent({ filter, time: TIEMPO_TURNO, componentType: ComponentType.Button });
+            const iAction = await message.awaitMessageComponent({ filter: i => i.user.id === user.id, time: TIEMPO_TURNO });
 
-            player.defMod = 0; 
-            let accionMsg = '';
-            let dmg = 0;
+            let actionLog = '';
+            let usedSkill = null;
 
-            if (iPlayer.customId === 'huir') {
-                await iPlayer.update({ content: '🏃 Escapaste del combate a salvo.', embeds: [], components: [] });
-                return;
-            }
-
-            if (iPlayer.customId === 'atq') {
-                const defensaTotal = npc.stats.def + npc.defMod;
-                const baseDmg = Math.max(1, player.stats.atk - (defensaTotal * 0.4));
-                dmg = Math.floor(baseDmg * (0.9 + Math.random() * 0.2));
-                npc.currentHp -= dmg;
-                accionMsg = `🗡️ Atacaste causando **${dmg}** daño.`;
+            if (iAction.customId.startsWith('skill_')) {
+                const idx = parseInt(iAction.customId.split('_')[1]);
+                usedSkill = player.skills[idx];
+                actionLog = ejecutarHabilidad(usedSkill, player, npc);
+                player.skills[idx].currentCd = usedSkill.cd + 1;
             } 
-            else if (iPlayer.customId === 'hab') {
-                const res = usarHabilidad(player, npc);
-                npc.currentHp -= res.dmg;
-                accionMsg = `✨ ${res.msg}`;
+            else if (iAction.customId === 'support_assist') {
+                usedSkill = support.skill;
+                actionLog = `🔮 **Apoyo:** ${ejecutarHabilidad(usedSkill, player, npc)}`;
+                support.skill.currentCd = usedSkill.cd + 1;
             }
 
-            // --- VICTORIA DEL JUGADOR ---
+            await iAction.update({ components: [] }); 
+
             if (npc.currentHp <= 0) {
-                finalizado = true;
-
-                // 1. Calcular Monedas
-                const monedasGanadas = (dificultad === 'hard' ? RECOMPENSA_BASE * 2 : RECOMPENSA_BASE) + Math.floor(Math.random() * 20);
-                db.addBalance(interaction.guild.id, player.user.id, monedasGanadas);
-
-                // 2. Calcular Carga de Atrapasueños
-                const cargaGanada = dificultad === 'hard' ? 35 : 20;
-                let nuevaCarga = db.addAdventureCharge(interaction.guild.id, player.user.id, cargaGanada);
-
-                let msgPremio = `💰 Monedas: **+${monedasGanadas}**\n🕸️ Atrapasueños: **+${cargaGanada}%** (${nuevaCarga}%)`;
-
-                // 3. Verificar si se llenó (100%)
-                if (nuevaCarga >= 100) {
-                    // Resetear carga (restando 100 para guardar el sobrante)
-                    nuevaCarga -= 100;
-                    db.setAdventureCharge(interaction.guild.id, player.user.id, nuevaCarga);
-
-                    // Generar Carta Gratis
-                    const rand = Math.random() * 100;
-                    let rareza = 'Common';
-                    if (rand <= configRareza.Legendary.chance) rareza = 'Legendary';
-                    else if (rand <= configRareza.Epic.chance) rareza = 'Epic';
-                    else if (rand <= configRareza.Rare.chance) rareza = 'Rare';
-
-                    const pool = itemsGacha.filter(item => item.rarity === rareza);
-                    const cartaGanada = pool[Math.floor(Math.random() * pool.length)];
-
-                    db.addToInventory(interaction.guild.id, player.user.id, cartaGanada.id, 1);
-
-                    msgPremio += `\n\n✨ **¡ATRAPASUEÑOS AL MÁXIMO!** ✨\nLa energía acumulada se materializó en:\n🃏 **${cartaGanada.name}** (${configRareza[rareza].label})`;
-                }
-
-                const embedWin = getEmbed().setColor('#57f287').setTitle('🏆 ¡VICTORIA!');
-                embedWin.setDescription(`${accionMsg}\n\n**¡Has derrotado al NPC!**\n${msgPremio}`);
-                await iPlayer.update({ embeds: [embedWin], components: [] });
+                batallaActiva = false;
+                await finalizarBatalla(message, interaction, user, true, dificultad, actionLog);
                 return;
             }
 
-            // Turno del NPC
-            logBatalla = `${accionMsg}\n*El ${npc.name} está furioso...*`;
-            await iPlayer.update({ embeds: [getEmbed()], components: [getRow(true)] });
+            // --- 3. TURNO NPC ---
+            await wait(1500);
 
-            await wait(1500); 
+            const availableSkills = npc.skills.filter(s => s.currentCd === 0);
+            const npcSkill = availableSkills.length > 0 
+                ? availableSkills[Math.floor(Math.random() * availableSkills.length)]
+                : { name: 'Cansado', type: 'wait', desc: 'No hace nada' }; 
 
-            npc.defMod = 0;
-            let dmgNpc = 0;
-            let npcMsg = '';
-            const rollNpc = Math.random();
+            const npcLog = ejecutarHabilidad(npcSkill, npc, player);
+            if (npcSkill.cd) npcSkill.currentCd = npcSkill.cd + 1;
 
-            if (rollNpc < 0.3) {
-                const res = usarHabilidad(npc, player);
-                player.currentHp -= res.dmg;
-                npcMsg = `🔥 **${npc.name}** usó habilidad: ${res.msg}`;
-            } else {
-                const defensaTotalPlayer = player.stats.def + player.defMod;
-                const baseDmgNpc = Math.max(1, npc.stats.atk - (defensaTotalPlayer * 0.4));
-                dmgNpc = Math.floor(baseDmgNpc * (0.9 + Math.random() * 0.2));
-                player.currentHp -= dmgNpc;
-                npcMsg = `💢 **${npc.name}** atacó y te hizo **${dmgNpc}** daño.`;
-            }
+            log = `${actionLog}\n${npcLog}`;
 
-            logBatalla = `${accionMsg}\n${npcMsg}`;
-
-            // Derrota del Jugador
             if (player.currentHp <= 0) {
-                finalizado = true;
-                const embedLose = getEmbed().setColor('#ed4245').setTitle('💀 DERROTA');
-                embedLose.setDescription(`${npcMsg}\n\n**Te has quedado sin vida...**\nNo ganas carga ni monedas.`);
-                await message.edit({ embeds: [embedLose], components: [] });
+                batallaActiva = false;
+                await finalizarBatalla(message, interaction, user, false, dificultad, log);
                 return;
             }
+
+            // --- 4. FIN DE TURNO ---
+            reducirCooldowns(player.skills);
+            if (support) reducirCooldowns([support.skill]);
+            reducirCooldowns(npc.skills);
 
             turno++;
-            await message.edit({ embeds: [getEmbed()], components: [getRow(false)] });
 
         } catch (e) {
-            finalizado = true;
-            await message.edit({ content: '⏱️ Combate finalizado por inactividad.', components: [] });
+            console.log(e);
+            batallaActiva = false;
+            await message.edit({ content: '⏳ Tiempo agotado.', components: [] });
         }
     }
 }
 
-function usarHabilidad(caster, target) {
-    const ab = caster.ability;
-    let dmg = 0;
-    let msg = '';
-    if (ab.type === 'heal') {
-        const heal = Math.floor(caster.maxHp * 0.35);
-        caster.currentHp = Math.min(caster.maxHp, caster.currentHp + heal);
-        msg = `se curó **${heal}** HP.`;
-    } else if (ab.type === 'buff_def') {
-        caster.defMod = 30;
-        msg = `se protegió.`;
-    } else if (ab.type === 'pierce' || ab.type === 'magic') {
-        dmg = Math.floor(caster.stats.atk * 1.6);
-        msg = `lanzó *${ab.name}* e hizo **${dmg}** daño perforante.`;
-    } else {
-        dmg = Math.floor(caster.stats.atk * 2.2);
-        msg = `asestó un GOLPE CRÍTICO de **${dmg}** daño.`;
+function ejecutarHabilidad(skill, caster, target) {
+    let msg = `**${caster.name}** usó *${skill.name}*...`;
+
+    const atk = caster.stats.atk + (caster.buffs?.atk || 0);
+    const def = target.stats.def + (target.buffs?.def || 0);
+
+    switch (skill.type) {
+        case 'dmg':
+            // Daño = (Atk * Power) - (Def * 0.3)
+            let dmg = Math.floor((atk * skill.power) - (def * 0.3));
+            if (dmg < 1) dmg = 1;
+
+            if (target.shield > 0) {
+                const absorb = Math.min(target.shield, dmg);
+                target.shield -= absorb;
+                dmg -= absorb;
+                msg += ` ¡Escudo absorbió ${absorb}!`;
+            }
+
+            if (dmg > 0) {
+                target.currentHp -= dmg;
+                msg += ` ¡${dmg} daño!`;
+            } else if (target.shield > 0) {
+                msg += ` ¡Bloqueado!`;
+            }
+            break;
+
+        case 'heal':
+            const heal = skill.power;
+            caster.currentHp = Math.min(caster.maxHp, caster.currentHp + heal);
+            msg += ` recuperó ${heal} HP.`;
+            break;
+
+        case 'shield':
+            caster.shield = (caster.shield || 0) + skill.power;
+            msg += ` ganó ${skill.power} de Escudo.`;
+            break;
+
+        case 'buff_atk':
+            caster.buffs.atk += skill.power;
+            msg += ` subió su ataque.`;
+            break;
+
+        case 'buff_def':
+            caster.buffs.def += skill.power;
+            msg += ` subió su defensa.`;
+            break;
+
+        case 'debuff_spd':
+            msg += ` ralentizó al rival.`;
+            break;
+
+        case 'reduce_cd':
+            msg += ` redujo tiempos de espera.`;
+            break;
+
+        case 'wait':
+            msg += ` está recuperando aliento.`;
+            break;
     }
-    return { dmg, msg };
+    return msg;
 }
 
-function getFightersFromInv(inventory) {
+function reducirCooldowns(skills) {
+    skills.forEach(s => {
+        if (s.currentCd > 0) s.currentCd--;
+    });
+}
+
+async function finalizarBatalla(message, interaction, user, victoria, dificultad, logFinal) {
+    const embed = new EmbedBuilder()
+        .setDescription(logFinal)
+        .setTimestamp();
+
+    if (victoria) {
+        const premio = dificultad === 'hard' ? RECOMPENSA_BASE * 2 : RECOMPENSA_BASE;
+        db.addBalance(interaction.guild.id, user.id, premio);
+
+        const carga = dificultad === 'hard' ? 35 : 20;
+        const nuevaCarga = db.addAdventureCharge(interaction.guild.id, user.id, carga);
+        let extraMsg = '';
+
+        if (nuevaCarga >= 100) {
+            db.setAdventureCharge(interaction.guild.id, user.id, nuevaCarga - 100);
+            // Premio: Carta garantizada que no sea común (si es posible)
+            const premioCarta = itemsGacha.find(c => c.role === 'fighter' && c.rarity !== 'Common') || itemsGacha[0];
+            db.addToInventory(interaction.guild.id, user.id, premioCarta.id, 1);
+            extraMsg = `\n✨ **¡ATRAPASUEÑOS AL MÁXIMO!** Conseguiste: **${premioCarta.name}**`;
+        }
+
+        embed.setTitle('🏆 ¡VICTORIA!')
+             .setColor('#00FF00')
+             .addFields({ name: 'Recompensas', value: `💰 +${premio} monedas\n🕸️ Carga: ${nuevaCarga}% (+${carga}%)${extraMsg}` });
+    } else {
+        embed.setTitle('💀 DERROTA')
+             .setColor('#FF0000')
+             .setFooter({ text: 'No ganas recompensas esta vez.' });
+    }
+
+    await message.edit({ embeds: [embed], components: [] });
+}
+
+function getCardsByRole(inventory, role) {
     const validos = [];
     if (!inventory) return validos;
     for (const slot of inventory) {
-        const item = itemsGacha.find(i => i.id === slot.item_id);
+        const item = itemsGacha.find(i => i.id === slot.item_id && i.role === role);
         if (item) validos.push(item);
     }
     return validos;
 }
 
-function createSelectMenu(id, chars) {
+function createSelectMenu(id, chars, placeholder) {
     const options = chars.slice(0, 25).map(c => ({
         label: c.name,
-        description: `HP:${c.stats.hp} ATK:${c.stats.atk}`,
+        description: c.role === 'fighter' ? `ATK:${c.stats.atk}` : `Apoyo: ${c.assist.name}`,
         value: c.id,
         emoji: c.emoji
     }));
-    return new StringSelectMenuBuilder().setCustomId(id).setPlaceholder('Elige tu carta').addOptions(options);
+    return new StringSelectMenuBuilder().setCustomId(id).setPlaceholder(placeholder).addOptions(options);
 }
