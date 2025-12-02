@@ -4,7 +4,7 @@ require('dotenv').config();
 const { Client, Collection, GatewayIntentBits, Partials } = require('discord.js');
 
 // Importar el monitor de redes sociales
-const { startSocialCheck } = require('./utils/socialCheck'); // <--- AÑADIDO
+const { startSocialCheck } = require('./utils/socialCheck');
 
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.CLIENT_ID;
@@ -61,7 +61,7 @@ if (fs.existsSync(eventsPath)) {
 // Inicializar DB (exports helpers)
 client.db = require('./database');
 
-// Registrar comandos al iniciar (guild si GUILD_ID existe)
+// Registrar comandos al iniciar
 client.once('ready', async () => {
   console.log(`Conectado como ${client.user.tag} — cargados ${client.commands.size} comandos.`);
   const { REST } = require('@discordjs/rest');
@@ -73,18 +73,25 @@ client.once('ready', async () => {
 
   try {
     if (guildId) {
+      // 1. Registrar comandos SOLO en tu servidor (actualización instantánea)
       await restClient.put(Routes.applicationGuildCommands(clientId, guildId), { body: comandos });
-      console.log('Comandos registrados en guild (desarrollo):', guildId);
+      console.log(`✅ Comandos registrados LOCALMENTE en el servidor: ${guildId}`);
+
+      // 2. BORRAR los comandos globales antiguos para quitar los duplicados
+      // Esto soluciona que te salgan las opciones repetidas
+      await restClient.put(Routes.applicationCommands(clientId), { body: [] });
+      console.log('🗑️ Comandos globales antiguos eliminados (duplicados resueltos).');
+
     } else {
+      // Si NO hay ID de servidor, registramos globalmente
       await restClient.put(Routes.applicationCommands(clientId), { body: comandos });
-      console.log('Comandos registrados globalmente (puede tardar).');
+      console.log('🌎 Comandos registrados GLOBALMENTE (puede tardar 1 hora en actualizarse).');
     }
   } catch (err) {
     console.error('Error registrando comandos:', err);
   }
 
-  // --- AÑADIDO: INICIAR MONITOR SOCIAL ---
-  // Esto iniciará el bucle que comprueba Instagram/TikTok cada X tiempo
+  // Iniciar monitor de redes sociales
   startSocialCheck(client);
 });
 

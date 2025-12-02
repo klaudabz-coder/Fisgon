@@ -4,8 +4,8 @@ const { itemsGacha, configRareza } = require('../../utils/gachaItems');
 
 module.exports = {
   data: new SlashCommandBuilder()
-    .setName('gacha-coleccion')
-    .setDescription('Muestra tus personajes obtenidos en el gacha')
+    .setName('album')
+    .setDescription('Muestra tu álbum de cartas coleccionables')
     .addUserOption(u => u.setName('usuario').setDescription('Ver colección de otro usuario')),
 
   async execute(interaction) {
@@ -58,7 +58,7 @@ module.exports = {
     });
 
     const embed = new EmbedBuilder()
-        .setTitle(`Colección de ${target.username}`)
+        .setTitle('📖 Álbum de Cartas de ${target.username}')
         .setDescription(descripcion || 'Nada por aquí.')
         .setColor('#60a5fa')
         .setFooter({ text: `Total de personajes: ${totalItems} | ${miColeccion.length}/${itemsGacha.length} descubiertos` });

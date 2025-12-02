@@ -6,7 +6,7 @@ const { ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder } = requ
 module.exports = {
   name: 'interactionCreate',
   async execute(client, interaction) {
-    // Comandos slash
+    // Slash commands
     if (interaction.isChatInputCommand()) {
       const cmd = client.commands.get(interaction.commandName);
       if (!cmd) return;
@@ -19,7 +19,7 @@ module.exports = {
       return;
     }
 
-    // Botones de tickets
+    // Ticket Buttons
     if (interaction.isButton()) {
       const id = interaction.customId;
 
@@ -44,12 +44,13 @@ module.exports = {
         const ticket = db.getTicketByChannel(interaction.channelId);
         if (!ticket) return interaction.reply({ content: 'Este canal no es un ticket registrado.', ephemeral: true });
 
-        await interaction.deferReply({ ephemeral: true }).catch(()=>{});
+        await interaction.deferReply(); 
         const channel = interaction.channel;
         const guild = interaction.guild;
         const cfg = db.getTicketConfig(guild.id);
 
         try {
+          // 1. Generate Transcript
           let transcriptText = '';
           try {
             transcriptText = await generarTranscripcion(channel);
@@ -58,53 +59,40 @@ module.exports = {
             transcriptText = `Error generando transcripción: ${err.message}`;
           }
 
+          // 2. Send Transcript to logs channel
           if (cfg && cfg.transcript_channel_id) {
             const targetCh = await guild.channels.fetch(cfg.transcript_channel_id).catch(()=>null);
-            if (targetCh && targetCh.isTextBased && targetCh.send) {
+            if (targetCh && targetCh.isTextBased() && targetCh.send) {
               const buffer = Buffer.from(transcriptText, 'utf-8');
               const filename = `transcript-${channel.name}-${Date.now()}.txt`;
               const attachment = new AttachmentBuilder(buffer, { name: filename });
-              const meta = `Transcripción del ticket **${channel.name}**\nServidor: **${guild.name}**\nTicket owner: <@${ticket.owner_id}> (${ticket.owner_id})\nCerrado por: ${interaction.user.tag} (${interaction.user.id})\nCanal origen: <#${channel.id}>\n`;
+              const meta = `Transcripción del ticket **${channel.name}**\nServidor: **${guild.name}**\nTicket owner: <@${ticket.owner_id}>\nCerrado por: ${interaction.user.tag}\n`;
               await targetCh.send({ content: meta, files: [attachment] }).catch(e => {
-                console.error('No se pudo enviar la transcripción al canal de transcripciones:', e);
+                console.error('No se pudo enviar la transcripción:', e);
               });
-            } else {
-              await interaction.editReply({ content: 'Transcripción generada, pero no se pudo enviar al canal de transcripciones (canal inválido o permisos).', ephemeral: true });
             }
-          } else {
-            await interaction.editReply({ content: 'Transcripción generada, pero no hay canal de transcripciones configurado (usa /tickets-configurar).', ephemeral: true });
           }
 
+          // 3. Close in DB
           db.closeTicket(channel.id);
 
+          // 4. Remove User Permissions (so they can't type anymore)
           try {
             await channel.permissionOverwrites.edit(ticket.owner_id, { ViewChannel: false, SendMessages: false }).catch(()=>{});
           } catch (e) {}
 
-          try {
-            if (interaction.message && interaction.message.edit) {
-              const msg = interaction.message;
-              const row = new ActionRowBuilder()
-                .addComponents(
-                  new ButtonBuilder().setCustomId('ticket_claim').setLabel('💼 Reclamar').setStyle(ButtonStyle.Secondary).setDisabled(true),
-                  new ButtonBuilder().setCustomId('ticket_close').setLabel('🔒 Cerrar').setStyle(ButtonStyle.Secondary).setDisabled(true)
-                );
-              await msg.edit({ content: `${msg.content}\n\n🔒 Ticket cerrado por ${interaction.user.tag}`, components: [row] }).catch(()=>{});
-            }
-          } catch (e) {}
+          // 5. Notify and DELETE in 5 seconds
+          await interaction.editReply({ content: '🔒 **Ticket cerrado.** Transcripción guardada. El canal se eliminará en **5 segundos**.' });
 
-          try {
-            await interaction.followUp({ content: 'Ticket cerrado. Se generó la transcripción y se enviará al canal configurado (si existe). El canal será eliminado en 15 segundos.', ephemeral: true });
-          } catch(e){}
           setTimeout(async () => {
             try {
               await channel.delete('Ticket cerrado — limpieza automática').catch(()=>{});
             } catch(e){}
-          }, 15000);
+          }, 5000); // 5000ms = 5 seconds
 
           return;
         } catch (err) {
-          console.error('Error al cerrar ticket con transcripción:', err);
+          console.error('Error al cerrar ticket:', err);
           return interaction.editReply({ content: `Error al cerrar el ticket: ${err.message}`, ephemeral: true });
         }
       }
