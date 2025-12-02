@@ -4,40 +4,39 @@ const { itemsGacha, configRareza } = require('../../utils/gachaItems');
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('cartas-info')
-    .setDescription('Muestra las estadísticas detalladas de una carta')
+    .setDescription('Muestra detalles de una carta')
     .addStringOption(option => option.setName('carta').setDescription('Nombre').setRequired(true).setAutocomplete(true)),
 
   async autocomplete(interaction) {
-    const focusedValue = interaction.options.getFocused().toLowerCase();
-    const filtered = itemsGacha.filter(item => item.name.toLowerCase().includes(focusedValue));
-    await interaction.respond(filtered.slice(0, 25).map(item => ({ name: item.name, value: item.id })));
+    const val = interaction.options.getFocused().toLowerCase();
+    const filtered = itemsGacha.filter(i => i.name.toLowerCase().includes(val));
+    await interaction.respond(filtered.slice(0, 25).map(i => ({ name: i.name, value: i.id })));
   },
 
   async execute(interaction) {
-    const cartaId = interaction.options.getString('carta');
-    const carta = itemsGacha.find(c => c.id === cartaId || c.name.toLowerCase() === cartaId.toLowerCase());
+    const id = interaction.options.getString('carta');
+    const carta = itemsGacha.find(c => c.id === id || c.name.toLowerCase() === id.toLowerCase());
 
-    if (!carta) return interaction.reply({ content: '❌ Carta no encontrada.', ephemeral: true });
+    if (!carta) return interaction.reply({ content: '❌ No encontrada.', ephemeral: true });
 
-    const infoRareza = configRareza[carta.rarity];
+    const info = configRareza[carta.rarity];
     const embed = new EmbedBuilder()
         .setTitle(`${carta.emoji} ${carta.name}`)
-        .setDescription(`**Rol:** ${carta.role === 'fighter' ? '⚔️ Luchador' : '🔮 Soporte'}\n**Rareza:** ${infoRareza.label}`)
-        .setColor(infoRareza.color);
+        .setDescription(`**Rareza:** ${info.label}\nEsta carta puede usarse como Luchador o Soporte.`)
+        .setColor(info.color);
 
     if (carta.image) embed.setThumbnail(carta.image);
 
-    if (carta.role === 'fighter') {
-        embed.addFields(
-            { name: 'Estadísticas', value: `❤️ HP: ${carta.stats.hp}\n⚔️ ATK: ${carta.stats.atk}\n🛡️ DEF: ${carta.stats.def}\n💨 SPD: ${carta.stats.spd}`, inline: false },
-            { name: 'Habilidades', value: carta.skills.map(s => `🔹 **${s.name}** (CD: ${s.cd}): ${s.desc}`).join('\n'), inline: false }
-        );
-    } else {
-        // Es Soporte
-        const a = carta.assist;
-        embed.addFields(
-            { name: 'Habilidad de Apoyo', value: `✨ **${a.name}** (CD: ${a.cd})\n${a.desc}`, inline: false }
-        );
+    // Skills Luchador
+    const skillsText = carta.skills.map(s => `🔹 **${s.name}** (CD:${s.cd}): ${s.desc}`).join('\n');
+    embed.addFields({ name: '⚔️ Modo Luchador', value: `HP: ${carta.stats.hp} | ATK: ${carta.stats.atk} | DEF: ${carta.stats.def}\n${skillsText}` });
+
+    // Skill Soporte
+    embed.addFields({ name: '🔮 Modo Soporte', value: `✨ **${carta.assist.name}** (CD:${carta.assist.cd})\n${carta.assist.desc}` });
+
+    // Sinergia
+    if (carta.synergy) {
+        embed.addFields({ name: '🤝 Sinergia', value: `Con **${carta.synergy.target}**: ${carta.synergy.desc}` });
     }
 
     await interaction.reply({ embeds: [embed] });
