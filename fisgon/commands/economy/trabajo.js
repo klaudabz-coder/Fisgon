@@ -1,5 +1,15 @@
 const { SlashCommandBuilder } = require('discord.js');
-const db = require('../../database'); // Asegúrate de que la ruta a database sea correcta
+const db = require('../../database');
+
+// Importamos el sistema de misiones de forma segura (si existe)
+let trackQuest, QUEST_TYPES;
+try {
+    const quests = require('../../utils/quests');
+    trackQuest = quests.trackQuest;
+    QUEST_TYPES = quests.QUEST_TYPES;
+} catch (e) {
+    // Si no tienes el sistema de misiones aún, esto evita errores
+}
 
 // Mapa para controlar el tiempo de espera (Cooldown) en memoria
 const cooldowns = new Map();
@@ -14,11 +24,11 @@ module.exports = {
     const guildId = interaction.guild.id;
 
     // --- CONFIGURACIÓN ---
-    const tiempoEspera = 60 * 60 * 1000; // 1 hora en milisegundos
+    const tiempoEspera = 60 * 60 * 1000; // 1 hora
     const pagoMinimo = 20;
     const pagoMaximo = 250;
 
-    // Lista de respuestas / trabajos aleatorios
+    // Tu lista de trabajos original
     const listaTrabajos = [
         "Ayudaste a recolectar los materiales necesarios para el Ritual del Sueño Lúcido. Ganas ${ganancia} por tu parte en el proceso.",
         "Lograste documentar el patrón de parpadeo de una entidad espectral. Recibes ${ganancia} por tu informe para la Corporación.",
@@ -30,12 +40,11 @@ module.exports = {
         "Te contrataron para reordenar las moquetas del Nivel 4 ('Oficinas Abandonadas'). El trabajo fue monótono, pero ganaste ${ganancia}",
         "Recuperaste y digitalizaste los archivos perdidos del noticiero local sobre la leyenda del Nahual. Cobras ${ganancia} por el material.",
         "Recuperaste un juguete maldito de una casa abandonada. Por desafiar al Poltergeist, ganas ${ganancia}",
-      "Te quedaste inmóvil observando un espejo sin reflejo por 6 horas. La Guardia Nocturna te paga ${ganancia} por tu reporte.",
-      "Lograste navegar el Nivel 1 de los Backrooms sin encontrar entidades. El esfuerzo se paga con ${ganancia} en efectivo.",
-      "Realizaste el ritual de la Mano Invisible. Tu servicio al ente te recompensa con ${ganancia} y evitas un parpadeo fatal.",
-      "Pasaste la noche monitoreando un viejo televisor con nieve. Lograste grabar una silueta y vendes la cinta a un investigador. Recibes ${ganancia}"
+        "Te quedaste inmóvil observando un espejo sin reflejo por 6 horas. La Guardia Nocturna te paga ${ganancia} por tu reporte.",
+        "Lograste navegar el Nivel 1 de los Backrooms sin encontrar entidades. El esfuerzo se paga con ${ganancia} en efectivo.",
+        "Realizaste el ritual de la Mano Invisible. Tu servicio al ente te recompensa con ${ganancia} y evitas un parpadeo fatal.",
+        "Pasaste la noche monitoreando un viejo televisor con nieve. Lograste grabar una silueta y vendes la cinta a un investigador. Recibes ${ganancia}"
     ];
-    // ---------------------
 
     // Verificar Cooldown
     if (cooldowns.has(userId)) {
@@ -50,22 +59,33 @@ module.exports = {
       }
     }
 
-    // Calcular ganancia aleatoria entre min y max
+    // 1. Calcular ganancia
     const ganancia = Math.floor(Math.random() * (pagoMaximo - pagoMinimo + 1)) + pagoMinimo;
 
-    // Seleccionar una frase aleatoria
-    const trabajoRealizado = listaTrabajos[Math.floor(Math.random() * listaTrabajos.length)];
+    // 2. Seleccionar frase
+    let textoTrabajo = listaTrabajos[Math.floor(Math.random() * listaTrabajos.length)];
 
-    // Guardar en la base de datos
-    // Nota: Usamos db.addBalance igual que en tus otros comandos
+    // 3. REEMPLAZAR EL TEXTO ${ganancia} POR EL NÚMERO
+    textoTrabajo = textoTrabajo.replace('${ganancia}', `**${ganancia}**`); 
+
+    // Guardar en DB
     db.addBalance(guildId, userId, ganancia);
 
-    // Establecer el cooldown
+    // Tracking de Misión (si aplica)
+    if (trackQuest && QUEST_TYPES) {
+        trackQuest(guildId, userId, QUEST_TYPES.WORK, 1);
+    }
+
+    // Establecer cooldown
     cooldowns.set(userId, Date.now());
 
-    // Responder al usuario
+    // Responder
+    // Convertimos la primera letra a minúscula para que encaje después del nombre de usuario
+    // ej: "**Usuario**, lograste documentar..."
+    const textoFinal = textoTrabajo.charAt(0).toLowerCase() + textoTrabajo.slice(1);
+
     return interaction.reply({ 
-        content: `💼 **${interaction.user.username}**, ${trabajoRealizado.toLowerCase()} y ganaste **${ganancia}** monedas.` 
+        content: `💼 **${interaction.user.username}**, ${textoFinal}` 
     });
   }
 };
