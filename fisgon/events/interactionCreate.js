@@ -1,15 +1,47 @@
 const db = require('../database');
 const { crearTicket } = require('../utils/tickets');
 const { generarTranscripcion } = require('../utils/transcript');
-const { ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder } = require('discord.js');
+const { ActionRowBuilder, ButtonBuilder, ButtonStyle, AttachmentBuilder, PermissionFlagsBits } = require('discord.js');
 
 module.exports = {
   name: 'interactionCreate',
   async execute(client, interaction) {
-    // Slash commands
+
+    // 1. MANEJO DE AUTOCOMPLETADO
+    if (interaction.isAutocomplete()) {
+      const cmd = client.commands.get(interaction.commandName);
+      if (!cmd) return;
+      try {
+        await cmd.autocomplete(interaction);
+      } catch (err) {
+        console.error('Error en autocompletado:', err);
+      }
+      return;
+    }
+
+    // 2. COMANDOS SLASH (AQUÍ ESTÁ LA LÓGICA DE BLOQUEO)
     if (interaction.isChatInputCommand()) {
       const cmd = client.commands.get(interaction.commandName);
       if (!cmd) return;
+
+      // --- VERIFICACIÓN DE MÓDULOS ---
+      if (cmd.category && interaction.guild) {
+        const config = db.getCategoryConfig(interaction.guild.id, cmd.category);
+
+        // A) Verificar si está desactivado
+        if (config.enabled === false) {
+             return interaction.reply({ content: `🚫 El sistema de **${cmd.category}** está desactivado en este servidor.`, ephemeral: true });
+        }
+
+        // B) Verificar Roles (Los administradores siempre pasan)
+        if (config.required_role && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+            if (!interaction.member.roles.cache.has(config.required_role)) {
+                return interaction.reply({ content: `🔒 Necesitas el rol <@&${config.required_role}> para usar comandos de **${cmd.category}**.`, ephemeral: true });
+            }
+        }
+      }
+      // -------------------------------
+
       try {
         await cmd.execute(interaction, client);
       } catch (err) {
@@ -19,7 +51,7 @@ module.exports = {
       return;
     }
 
-    // Ticket Buttons
+    // 3. BOTONES (Tickets, etc.) - Se mantiene igual
     if (interaction.isButton()) {
       const id = interaction.customId;
 
@@ -50,7 +82,6 @@ module.exports = {
         const cfg = db.getTicketConfig(guild.id);
 
         try {
-          // 1. Generate Transcript
           let transcriptText = '';
           try {
             transcriptText = await generarTranscripcion(channel);
@@ -59,7 +90,6 @@ module.exports = {
             transcriptText = `Error generando transcripción: ${err.message}`;
           }
 
-          // 2. Send Transcript to logs channel
           if (cfg && cfg.transcript_channel_id) {
             const targetCh = await guild.channels.fetch(cfg.transcript_channel_id).catch(()=>null);
             if (targetCh && targetCh.isTextBased() && targetCh.send) {
@@ -73,22 +103,14 @@ module.exports = {
             }
           }
 
-          // 3. Close in DB
           db.closeTicket(channel.id);
+          try { await channel.permissionOverwrites.edit(ticket.owner_id, { ViewChannel: false, SendMessages: false }).catch(()=>{}); } catch (e) {}
 
-          // 4. Remove User Permissions (so they can't type anymore)
-          try {
-            await channel.permissionOverwrites.edit(ticket.owner_id, { ViewChannel: false, SendMessages: false }).catch(()=>{});
-          } catch (e) {}
-
-          // 5. Notify and DELETE in 5 seconds
           await interaction.editReply({ content: '🔒 **Ticket cerrado.** Transcripción guardada. El canal se eliminará en **5 segundos**.' });
 
           setTimeout(async () => {
-            try {
-              await channel.delete('Ticket cerrado — limpieza automática').catch(()=>{});
-            } catch(e){}
-          }, 5000); // 5000ms = 5 seconds
+            try { await channel.delete('Ticket cerrado — limpieza automática').catch(()=>{}); } catch(e){}
+          }, 5000);
 
           return;
         } catch (err) {
