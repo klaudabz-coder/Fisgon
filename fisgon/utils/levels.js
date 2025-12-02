@@ -17,7 +17,6 @@ function levelFromXp(totalXp, config = { base: 100, exponent: 1.5 }) {
 function xpInfoFromTotal(totalXp, config = { base: 100, exponent: 1.5 }) {
   let level = 0;
   let xpUsed = 0;
-  // Calculamos el nivel actual sumando lo necesario para cada nivel previo
   while (totalXp >= xpUsed + xpForLevel(level + 1, config)) {
     xpUsed += xpForLevel(level + 1, config);
     level++;

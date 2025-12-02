@@ -16,7 +16,7 @@ module.exports = {
     // OBTENER CONFIG DE DB
     const levelConfig = db.getLevelConfig(interaction.guild.id);
 
-    const info = xpInfoFromTotal(xpTotal, levelConfig); // Usamos config
+    const info = xpInfoFromTotal(xpTotal, levelConfig); // Usar config
     const nivel = info.level;
     const xpInto = info.xpIntoLevel;
     const xpForNext = info.xpForNext;

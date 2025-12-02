@@ -20,7 +20,7 @@ module.exports = {
     // Guardar
     db.setLevelConfig(interaction.guild.id, base, exponent);
 
-    // Generar ejemplo para que el usuario vea el impacto
+    // Generar ejemplo
     const config = { base, exponent };
     const ejemplo = `
     **Nivel 1:** ${xpForLevel(1, config)} XP

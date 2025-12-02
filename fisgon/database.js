@@ -54,7 +54,7 @@ async function init() {
         loadCollectionToCache('social_feeds', caches.social_feeds, doc => doc.id),
         loadCollectionToCache('quests', caches.quests, keyFromDocEconomy),
         loadCollectionToCache('guild_modules', caches.guild_modules, doc => doc.id),
-        loadCollectionToCache('level_config', caches.level_config, doc => doc.id) // <--- AÑADIDO
+        loadCollectionToCache('level_config', caches.level_config, doc => doc.id) // <--- CARGAR CONFIG
       ]);
       console.log('ℹ️  [DB] Caches loaded.');
     }
@@ -101,7 +101,7 @@ async function deleteDoc(collection, id) {
 
 module.exports = {
   init,
-  // ... Funciones existentes ...
+  // --- Funciones existentes ---
   getBalance(guildId, userId) { const key = `${guildId}_${userId}`; const r = caches.economy.get(key); return r ? r.balance || 0 : 0; },
   addBalance(guildId, userId, amount) { const key = `${guildId}_${userId}`; const cur = caches.economy.get(key) || { user_id: userId, guild_id: guildId, balance: 0, last_daily: 0 }; cur.balance = (cur.balance || 0) + amount; if (cur.balance < 0) cur.balance = 0; caches.economy.set(key, cur); persistDoc('economy', key, cur); return cur.balance; },
   setBalance(guildId, userId, amount) { const key = `${guildId}_${userId}`; const cur = caches.economy.get(key) || { user_id: userId, guild_id: guildId }; cur.balance = amount; caches.economy.set(key, cur); persistDoc('economy', key, cur); return cur.balance; },
