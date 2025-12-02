@@ -13,7 +13,8 @@ const caches = {
   guild_config: new Map(),
   logs: new Map(),
   ticket_config: new Map(),
-  tickets: new Map()
+  tickets: new Map(),
+  social_feeds: new Map() // <--- AÑADIDO: Caché para alertas sociales
 };
 
 let firestore = null;
@@ -50,7 +51,8 @@ async function init() {
         loadCollectionToCache('guild_config', caches.guild_config, doc => doc.id),
         loadCollectionToCache('logs', caches.logs, doc => doc.id),
         loadCollectionToCache('ticket_config', caches.ticket_config, doc => doc.id),
-        loadCollectionToCache('tickets', caches.tickets, doc => doc.id)
+        loadCollectionToCache('tickets', caches.tickets, doc => doc.id),
+        loadCollectionToCache('social_feeds', caches.social_feeds, doc => doc.id) // <--- AÑADIDO: Carga inicial de alertas
       ]);
       console.log('ℹ️  [DB] Caches loaded.');
     }
@@ -95,9 +97,7 @@ async function deleteDoc(collection, id) {
   try { await firestore.collection(collection).doc(id).delete(); } catch (err) { console.error(`❌ [DB] Failed to delete ${collection}/${id}:`, err.message || err); }
 }
 
-// Exported API: keep same function names used across the bot. Reads are synchronous
-// against the in-memory cache; writes update cache immediately and persist
-// asynchronously (fire-and-forget style with error logging).
+// Exported API
 module.exports = {
   init,
 
@@ -309,5 +309,42 @@ module.exports = {
   },
   getTicketByChannel(channelId) {
     return caches.tickets.get(channelId) || null;
+  },
+
+  // --- SOCIAL FEEDS (AÑADIDO) ---
+  addSocialFeed(guildId, platform, username, channelId) {
+    // ID único combinando servidor, plataforma y usuario
+    const id = `${guildId}_${platform}_${username}`;
+    const obj = { 
+      id, 
+      guild_id: guildId, 
+      platform, 
+      username, 
+      channel_id: channelId, 
+      last_post_id: null, // Aquí guardaremos el ID del último video visto
+      created_at: Date.now() 
+    };
+    caches.social_feeds.set(id, obj);
+    persistDoc('social_feeds', id, obj);
+    return obj;
+  },
+
+  removeSocialFeed(guildId, platform, username) {
+    const id = `${guildId}_${platform}_${username}`;
+    caches.social_feeds.delete(id);
+    deleteDoc('social_feeds', id);
+  },
+
+  getAllSocialFeeds() {
+    return Array.from(caches.social_feeds.values());
+  },
+
+  updateSocialFeedLastPost(id, lastPostId) {
+    const cur = caches.social_feeds.get(id);
+    if (cur) {
+      cur.last_post_id = lastPostId;
+      caches.social_feeds.set(id, cur);
+      persistDoc('social_feeds', id, cur);
+    }
   }
 };

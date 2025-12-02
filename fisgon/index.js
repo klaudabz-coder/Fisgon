@@ -3,6 +3,9 @@ const path = require('path');
 require('dotenv').config();
 const { Client, Collection, GatewayIntentBits, Partials } = require('discord.js');
 
+// Importar el monitor de redes sociales
+const { startSocialCheck } = require('./utils/socialCheck'); // <--- AÑADIDO
+
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.CLIENT_ID;
 const guildId = process.env.GUILD_ID;
@@ -79,6 +82,10 @@ client.once('ready', async () => {
   } catch (err) {
     console.error('Error registrando comandos:', err);
   }
+
+  // --- AÑADIDO: INICIAR MONITOR SOCIAL ---
+  // Esto iniciará el bucle que comprueba Instagram/TikTok cada X tiempo
+  startSocialCheck(client);
 });
 
 client.on('interactionCreate', async interaction => {
