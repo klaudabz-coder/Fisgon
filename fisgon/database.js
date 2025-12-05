@@ -18,7 +18,6 @@ const caches = {
   guild_modules: new Map(),
   level_config: new Map(),
   adventure: new Map(),
-  // NUEVO: Cartas y Sets personalizados
   card_sets: new Map(),
   custom_cards: new Map()
 };
@@ -60,8 +59,8 @@ async function init() {
         loadCollectionToCache('guild_modules', caches.guild_modules, doc => doc.id),
         loadCollectionToCache('level_config', caches.level_config, doc => doc.id),
         loadCollectionToCache('adventure', caches.adventure, keyFromDocEconomy),
-        loadCollectionToCache('card_sets', caches.card_sets, doc => doc.id),     // NUEVO
-        loadCollectionToCache('custom_cards', caches.custom_cards, doc => doc.id) // NUEVO
+        loadCollectionToCache('card_sets', caches.card_sets, doc => doc.id),
+        loadCollectionToCache('custom_cards', caches.custom_cards, doc => doc.id)
       ]);
       console.log('ℹ️  [DB] Caches loaded.');
     }
@@ -108,7 +107,6 @@ async function deleteDoc(collection, id) {
 
 module.exports = {
   init,
-  // ... Funciones existentes ...
   getBalance(guildId, userId) { const key = `${guildId}_${userId}`; const r = caches.economy.get(key); return r ? r.balance || 0 : 0; },
   addBalance(guildId, userId, amount) { const key = `${guildId}_${userId}`; const cur = caches.economy.get(key) || { user_id: userId, guild_id: guildId, balance: 0, last_daily: 0 }; cur.balance = (cur.balance || 0) + amount; if (cur.balance < 0) cur.balance = 0; caches.economy.set(key, cur); persistDoc('economy', key, cur); return cur.balance; },
   setBalance(guildId, userId, amount) { const key = `${guildId}_${userId}`; const cur = caches.economy.get(key) || { user_id: userId, guild_id: guildId }; cur.balance = amount; caches.economy.set(key, cur); persistDoc('economy', key, cur); return cur.balance; },
@@ -158,13 +156,19 @@ module.exports = {
   addAdventureCharge(guildId, userId, amount) { const key = `${guildId}_${userId}`; const cur = caches.adventure.get(key) || { guild_id: guildId, user_id: userId, charge: 0 }; cur.charge = (cur.charge || 0) + amount; caches.adventure.set(key, cur); persistDoc('adventure', key, cur); return cur.charge; },
   setAdventureCharge(guildId, userId, amount) { const key = `${guildId}_${userId}`; const cur = caches.adventure.get(key) || { guild_id: guildId, user_id: userId }; cur.charge = amount; caches.adventure.set(key, cur); persistDoc('adventure', key, cur); },
 
-  // --- NUEVO: GESTIÓN DE SETS Y CARTAS PERSONALIZADAS ---
+  // --- GESTIÓN DE SETS Y CARTAS (MEJORADO) ---
 
   createSet(guildId, setId, name, price) {
     const key = `${guildId}_${setId}`;
     const obj = { guild_id: guildId, id: setId, name, price, type: 'set' };
     caches.card_sets.set(key, obj);
     persistDoc('card_sets', key, obj);
+  },
+
+  deleteSet(guildId, setId) {
+    const key = `${guildId}_${setId}`;
+    caches.card_sets.delete(key);
+    deleteDoc('card_sets', key);
   },
 
   getSets(guildId) {
@@ -180,6 +184,27 @@ module.exports = {
     caches.custom_cards.set(cardId, obj);
     persistDoc('custom_cards', cardId, obj);
     return obj;
+  },
+
+  updateCustomCard(guildId, cardId, newData) {
+    const current = caches.custom_cards.get(cardId);
+    if (!current || current.guild_id !== guildId) return null;
+
+    // Fusionar datos (asegurando que el ID no cambie)
+    const updated = { ...current, ...newData, id: cardId };
+    caches.custom_cards.set(cardId, updated);
+    persistDoc('custom_cards', cardId, updated);
+    return updated;
+  },
+
+  deleteCustomCard(guildId, cardId) {
+    const current = caches.custom_cards.get(cardId);
+    if (current && current.guild_id === guildId) {
+        caches.custom_cards.delete(cardId);
+        deleteDoc('custom_cards', cardId);
+        return true;
+    }
+    return false;
   },
 
   getCustomCards(guildId) {

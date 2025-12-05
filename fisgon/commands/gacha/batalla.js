@@ -1,217 +1,289 @@
-const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle, ComponentType } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, ComponentType } = require('discord.js');
 const db = require('../../database');
-const { itemsGacha } = require('../../utils/gachaItems');
+const { getAllCards } = require('../../utils/cardRegistry');
 
-// Tiempo para seleccionar personaje y para cada turno
-const TIEMPO_SELECCION = 60000; 
-const TIEMPO_TURNO = 30000;
+const TIEMPO_PREPARACION = 120000;
+const TIEMPO_TURNO = 60000;
 
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('duelo')
-    .setDescription('Reta a otro usuario a un duelo de cartas')
+    .setDescription('Reta a otro usuario a un duelo táctico (1 Atacante + 3 Defensores)')
     .addUserOption(u => u.setName('rival').setDescription('Usuario contra quien pelear').setRequired(true)),
 
   async execute(interaction) {
-    const p1 = interaction.user;
-    const p2 = interaction.options.getUser('rival');
+    const p1User = interaction.user;
+    const p2User = interaction.options.getUser('rival');
 
-    if (p1.id === p2.id) return interaction.reply({ content: 'No puedes pelear contra ti mismo.', ephemeral: true });
-    if (p2.bot) return interaction.reply({ content: 'No puedes pelear contra bots (aún).', ephemeral: true });
+    if (p1User.id === p2User.id || p2User.bot) return interaction.reply({ content: '❌ Rival inválido.', ephemeral: true });
 
-    // 1. Obtener inventarios y filtrar personajes válidos
-    const inv1 = db.getInventory(interaction.guild.id, p1.id);
-    const inv2 = db.getInventory(interaction.guild.id, p2.id);
+    // 1. Validar Inventarios
+    const allCards = getAllCards(interaction.guild.id);
+    const getCartasUser = (uid) => {
+        const inv = db.getInventory(interaction.guild.id, uid);
+        const cartas = [];
+        for (const slot of inv) {
+            const item = allCards.find(c => c.id === slot.item_id);
+            if (item) cartas.push(item);
+        }
+        return cartas;
+    };
 
-    const chars1 = getFightersFromInv(inv1);
-    const chars2 = getFightersFromInv(inv2);
+    const cartasP1 = getCartasUser(p1User.id);
+    const cartasP2 = getCartasUser(p2User.id);
 
-    if (chars1.length === 0) return interaction.reply({ content: 'No tienes cartas en tu mazo. Usa /abrir para conseguir algunas.', ephemeral: true });
-    if (chars2.length === 0) return interaction.reply({ content: `${p2.username} no tiene personajes de Gacha.`, ephemeral: true });
+    if (cartasP1.length === 0) return interaction.reply({ content: '❌ No tienes cartas para pelear.', ephemeral: true });
+    if (cartasP2.length === 0) return interaction.reply({ content: `❌ ${p2User.username} no tiene cartas.`, ephemeral: true });
 
-    await interaction.reply({ content: `⚔️ **¡Desafío de Duelo!**\n${p1} ha retado a ${p2}.\nAmbos deben seleccionar su luchador abajo.`, fetchReply: true });
+    // 2. Fase de Invitación y Preparación
+    const btnJoin = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('join_p1').setLabel(`Configurar Equipo (${p1User.username})`).setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('join_p2').setLabel(`Configurar Equipo (${p2User.username})`).setStyle(ButtonStyle.Primary)
+    );
 
-    // 2. Crear Menús de Selección para ambos jugadores
-    const row1 = new ActionRowBuilder().addComponents(createSelectMenu('p1_select', chars1, `Elección de ${p1.username}`));
-    const row2 = new ActionRowBuilder().addComponents(createSelectMenu('p2_select', chars2, `Elección de ${p2.username}`));
+    const embedIntro = new EmbedBuilder()
+        .setTitle('⚔️ Desafío de Duelo')
+        .setDescription(`${p1User} ha retado a ${p2User}.\n\nAmbos deben pulsar su botón para configurar su equipo en secreto.\n**Reglas:**\n- 1 Atacante (Líder)\n- Hasta 3 Defensores (Soporte)\n- Puedes cambiar al atacante gastando turno.`)
+        .setColor('#5865F2');
 
-    const msgSeleccion = await interaction.channel.send({ components: [row1, row2] });
+    const msg = await interaction.reply({ content: `¡${p2User}, te han retado!`, embeds: [embedIntro], components: [btnJoin], fetchReply: true });
 
-    // Variables de la batalla
-    let fighter1 = null;
-    let fighter2 = null;
+    const equipos = { p1: null, p2: null };
 
-    const collector = msgSeleccion.createMessageComponentCollector({ componentType: ComponentType.StringSelect, time: TIEMPO_SELECCION });
+    const collector = msg.createMessageComponentCollector({ componentType: ComponentType.Button, time: TIEMPO_PREPARACION });
 
     collector.on('collect', async i => {
-        if (i.customId === 'p1_select') {
-            if (i.user.id !== p1.id) return i.reply({ content: 'Este menú no es para ti.', ephemeral: true });
-            const charId = i.values[0];
-            const baseChar = itemsGacha.find(c => c.id === charId);
-            fighter1 = { ...baseChar, maxHp: baseChar.stats.hp, currentHp: baseChar.stats.hp, user: p1, defMod: 0 };
-            await i.reply({ content: `Has elegido a **${fighter1.name}**`, ephemeral: true });
-        }
+        const esP1 = i.user.id === p1User.id && i.customId === 'join_p1';
+        const esP2 = i.user.id === p2User.id && i.customId === 'join_p2';
 
-        if (i.customId === 'p2_select') {
-            if (i.user.id !== p2.id) return i.reply({ content: 'Este menú no es para ti.', ephemeral: true });
-            const charId = i.values[0];
-            const baseChar = itemsGacha.find(c => c.id === charId);
-            fighter2 = { ...baseChar, maxHp: baseChar.stats.hp, currentHp: baseChar.stats.hp, user: p2, defMod: 0 };
-            await i.reply({ content: `Has elegido a **${fighter2.name}**`, ephemeral: true });
-        }
+        if (!esP1 && !esP2) return i.reply({ content: 'Este botón no es para ti.', ephemeral: true });
 
-        // Si ambos eligieron, inicia la pelea
-        if (fighter1 && fighter2) {
-            collector.stop('ready');
-        }
+        const playerKey = esP1 ? 'p1' : 'p2';
+        const misCartas = esP1 ? cartasP1 : cartasP2;
+
+        if (equipos[playerKey]) return i.reply({ content: '✅ Ya tienes tu equipo listo.', ephemeral: true });
+
+        // --- SELECCIÓN PRIVADA ---
+        const rowAtk = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder().setCustomId('sel_atk').setPlaceholder('Elige tu ATACANTE Principal')
+                .addOptions(misCartas.slice(0, 25).map(c => ({ label: c.name, description: `ATK: ${c.stats.atk} HP: ${c.stats.hp}`, value: c.id })))
+        );
+
+        const msgSelect = await i.reply({ content: '🛡️ **Paso 1:** Selecciona tu carta líder.', components: [rowAtk], ephemeral: true, fetchReply: true });
+
+        try {
+            const selAtk = await awaitKfSelect(msgSelect, i.user.id);
+            if (!selAtk) return;
+
+            const atacante = misCartas.find(c => c.id === selAtk.values[0]);
+
+            const rowDef = new ActionRowBuilder().addComponents(
+                new StringSelectMenuBuilder().setCustomId('sel_def').setPlaceholder('Elige hasta 3 DEFENSORES')
+                    .setMinValues(0).setMaxValues(Math.min(3, misCartas.length))
+                    .addOptions(misCartas.slice(0, 25).map(c => ({ label: c.name, description: `HP: ${c.stats.hp} | Skill: ${c.skills.def.name}`, value: c.id })))
+            );
+
+            await selAtk.update({ content: `✅ Líder: **${atacante.name}**\n🛡️ **Paso 2:** Selecciona tus soportes defensivos.`, components: [rowDef] });
+
+            const selDef = await awaitKfSelect(msgSelect, i.user.id);
+            if (!selDef) return;
+
+            const defensores = selDef.values.map(id => misCartas.find(c => c.id === id));
+
+            equipos[playerKey] = {
+                user: esP1 ? p1User : p2User,
+                attacker: { ...atacante, maxHp: atacante.stats.hp, currentHp: atacante.stats.hp, defMode: false },
+                defenders: defensores.map((d, idx) => ({ ...d, id_game: idx, usedTurn: false, maxHp: d.stats.hp, currentHp: d.stats.hp })),
+                imageBig: atacante.image
+            };
+
+            await selDef.update({ content: '✅ **Equipo registrado.** Esperando al oponente...', components: [] });
+
+            if (equipos.p1 && equipos.p2) collector.stop('listos');
+
+        } catch (e) { }
     });
 
     collector.on('end', async (collected, reason) => {
-        if (reason !== 'ready') {
-            return interaction.channel.send('⏳ Tiempo de selección agotado. Duelo cancelado.');
-        }
-
-        // Borrar menús de selección
-        await msgSeleccion.delete().catch(()=>{});
-
-        // INICIAR BUCLE DE BATALLA
-        iniciarBatalla(interaction.channel, fighter1, fighter2);
+        if (reason === 'listos') await iniciarBatallaPvP(interaction, msg, equipos.p1, equipos.p2);
+        else await msg.edit({ content: '⏳ Tiempo agotado.', components: [] });
     });
   }
 };
 
-// --- LÓGICA DE BATALLA ---
-async function iniciarBatalla(channel, f1, f2) {
-    let turno = 1;
-    // Determinar quién empieza por velocidad
-    let atacante = f1.stats.spd >= f2.stats.spd ? f1 : f2;
-    let defensor = atacante === f1 ? f2 : f1;
+async function awaitKfSelect(message, userId) {
+    try {
+        return await message.awaitMessageComponent({ 
+            filter: i => i.user.id === userId && i.componentType === ComponentType.StringSelect, 
+            time: 60000 
+        });
+    } catch (e) { return null; }
+}
 
-    let logBatalla = '¡Comienza el combate!';
-    let finalizado = false;
+async function iniciarBatallaPvP(interaction, message, p1, p2) {
+    let turnoP1 = p1.attacker.stats.spd >= p2.attacker.stats.spd;
+    let batallaActiva = true;
+    let log = "¡El duelo ha comenzado!";
 
-    // Mensaje base
-    const getEmbed = () => {
-        return new EmbedBuilder()
-            .setTitle(`⚔️ ${f1.name} vs ${f2.name}`)
-            .setDescription(logBatalla)
-            .addFields(
-                { name: `${f1.emoji} ${f1.user.username}`, value: `HP: ${f1.currentHp}/${f1.maxHp}\nATK: ${f1.stats.atk} DEF: ${f1.stats.def}`, inline: true },
-                { name: `${f2.emoji} ${f2.user.username}`, value: `HP: ${f2.currentHp}/${f2.maxHp}\nATK: ${f2.stats.atk} DEF: ${f2.stats.def}`, inline: true }
-            )
-            .setColor('#FF0000');
-    };
+    while (batallaActiva) {
+        const activePlayer = turnoP1 ? p1 : p2;
+        const opponent = turnoP1 ? p2 : p1;
 
-    // Botones de acción
-    const getRow = (disabled = false) => new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('atq').setLabel('Atacar').setStyle(ButtonStyle.Primary).setEmoji('🗡️').setDisabled(disabled),
-        new ButtonBuilder().setCustomId('hab').setLabel('Habilidad').setStyle(ButtonStyle.Secondary).setEmoji('✨').setDisabled(disabled)
-    );
+        // Reset visual de defensores para este turno
+        activePlayer.defenders.forEach(d => d.usedTurn = false);
 
-    const msgBatalla = await channel.send({ content: `Turno de ${atacante.user}`, embeds: [getEmbed()], components: [getRow()] });
+        const embed = new EmbedBuilder()
+            .setTitle(`⚔️ ${p1.user.username} vs ${p2.user.username}`)
+            .setColor(turnoP1 ? '#5865F2' : '#F25858')
+            .setImage(activePlayer.imageBig)
+            .setDescription(`
+                📢 **Turno de ${activePlayer.user}**
+                **Viendo:** ${activePlayer.imageBig === activePlayer.attacker.image ? 'Líder' : 'Carta Seleccionada'}
 
-    // Bucle de turnos
-    while (!finalizado) {
+                🔵 **${p1.user.username}** (Líder: ${p1.attacker.name})
+                ❤️ HP: ${p1.attacker.currentHp}/${p1.attacker.maxHp}
+
+                🔴 **${p2.user.username}** (Líder: ${p2.attacker.name})
+                ❤️ HP: ${p2.attacker.currentHp}/${p2.attacker.maxHp}
+
+                📜 **Log:**
+                ${log}
+            `)
+            .setFooter({ text: 'Cambiar de atacante consume el turno.' });
+
+        // --- BOTONES ---
+        // 1. Ataque
+        const rowAtk = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('atk_normal').setLabel('⚔️ Atacar').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('atk_skill').setLabel(`💥 ${activePlayer.attacker.skills.atk.name}`).setStyle(ButtonStyle.Danger)
+        );
+
+        // 2. Defensa
+        const rowDef = new ActionRowBuilder();
+        activePlayer.defenders.forEach((d, i) => {
+            rowDef.addComponents(
+                new ButtonBuilder().setCustomId(`def_skill_${i}`).setLabel(`${d.skills.def.name}`).setStyle(ButtonStyle.Secondary).setDisabled(d.usedTurn)
+            );
+        });
+
+        // 3. Inspección
+        const opcionesInspect = [
+            { label: `Ver Atacante: ${activePlayer.attacker.name}`, value: 'view_atk', emoji: '⚔️' }
+        ];
+        activePlayer.defenders.forEach((d, i) => {
+            opcionesInspect.push({ label: `Ver Defensor: ${d.name}`, value: `view_def_${i}`, emoji: '🛡️' });
+        });
+        const rowInspect = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder().setCustomId('inspect_menu').setPlaceholder('👁️ Inspeccionar carta').addOptions(opcionesInspect)
+        );
+
+        // 4. CAMBIO DE LÍDER (Swap)
+        const opcionesSwap = activePlayer.defenders.map((d, i) => ({
+            label: `Cambiar por: ${d.name}`,
+            description: `HP Actual: ${d.currentHp}`,
+            value: `swap_${i}`,
+            emoji: '🔄'
+        }));
+
+        const rowSwap = opcionesSwap.length > 0 ? new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder().setCustomId('swap_menu').setPlaceholder('🔄 Relevar Líder (Gasta turno)').addOptions(opcionesSwap)
+        ) : null;
+
+        const components = [rowAtk];
+        if (rowDef.components.length > 0) components.push(rowDef);
+        components.push(rowInspect);
+        if (rowSwap) components.push(rowSwap);
+
+        await message.edit({ content: `🔔 Turno de ${activePlayer.user}`, embeds: [embed], components: components });
+
         try {
-            const filter = i => i.user.id === atacante.user.id;
-            const interaction = await msgBatalla.awaitMessageComponent({ filter, time: TIEMPO_TURNO, componentType: ComponentType.Button });
+            const i = await message.awaitMessageComponent({ 
+                filter: int => int.user.id === activePlayer.user.id, 
+                time: TIEMPO_TURNO 
+            });
 
-            let dmg = 0;
-            let msgAccion = '';
-
-            // Resetear defensa temporal del turno anterior del defensor
-            defensor.defMod = 0;
-
-            if (interaction.customId === 'atq') {
-                // Daño = (Ataque - Defensa/2) + Aleatorio
-                const defensaTotal = defensor.stats.def + defensor.defMod;
-                const baseDmg = Math.max(1, atacante.stats.atk - (defensaTotal * 0.4));
-                dmg = Math.floor(baseDmg * (0.9 + Math.random() * 0.2)); // +/- 10% varianza
-
-                msgAccion = `⚔️ **${atacante.name}** atacó e hizo **${dmg}** de daño.`;
-            } 
-            else if (interaction.customId === 'hab') {
-                // Lógica simple de habilidades
-                const ab = atacante.ability;
-
-                if (ab.type === 'heal') {
-                    const heal = Math.floor(atacante.maxHp * 0.3);
-                    atacante.currentHp = Math.min(atacante.maxHp, atacante.currentHp + heal);
-                    msgAccion = `✨ **${atacante.name}** usó *${ab.name}* y recuperó **${heal}** HP.`;
-                } 
-                else if (ab.type === 'buff_def') {
-                    atacante.defMod = 20; // Sube defensa temporalmente
-                    msgAccion = `🛡️ **${atacante.name}** usó *${ab.name}* y subió su defensa.`;
-                }
-                else if (ab.type === 'pierce' || ab.type === 'magic') {
-                    // Daño ignorando defensa
-                    dmg = Math.floor(atacante.stats.atk * 1.5);
-                    msgAccion = `🔥 **${atacante.name}** usó *${ab.name}* e hizo **${dmg}** de daño masivo.`;
-                }
+            // A) INSPECCIÓN
+            if (i.customId === 'inspect_menu') {
+                const val = i.values[0];
+                if (val === 'view_atk') activePlayer.imageBig = activePlayer.attacker.image;
                 else {
-                    // Daño crítico
-                    dmg = Math.floor(atacante.stats.atk * 2);
-                    msgAccion = `💥 **${atacante.name}** usó *${ab.name}* CRÍTICAMENTE por **${dmg}** daño.`;
+                    const idx = parseInt(val.split('_')[2]);
+                    activePlayer.imageBig = activePlayer.defenders[idx].image;
                 }
+                await i.deferUpdate();
+                continue;
             }
 
-            // Aplicar daño
-            if (dmg > 0) {
-                defensor.currentHp -= dmg;
+            // B) DEFENSA (Gratis)
+            if (i.customId.startsWith('def_skill_')) {
+                const idx = parseInt(i.customId.split('_')[2]);
+                const defensor = activePlayer.defenders[idx];
+                const poder = defensor.skills.def.power;
+                activePlayer.attacker.currentHp += Math.floor(poder / 2);
+                if (activePlayer.attacker.currentHp > activePlayer.attacker.maxHp) activePlayer.attacker.currentHp = activePlayer.attacker.maxHp;
+                defensor.usedTurn = true;
+                log = `🛡️ **${defensor.name}** usa *${defensor.skills.def.name}* apoyando al líder.`;
+                await i.deferUpdate();
+                continue;
             }
 
-            // Actualizar Log
-            logBatalla = msgAccion;
+            // C) CAMBIO DE LÍDER (Gasta Turno)
+            if (i.customId === 'swap_menu') {
+                const idx = parseInt(i.values[0].split('_')[1]);
+                const nuevoAtacante = activePlayer.defenders[idx];
+                const viejoAtacante = activePlayer.attacker;
 
-            // Verificar Muerte
-            if (defensor.currentHp <= 0) {
-                defensor.currentHp = 0;
-                finalizado = true;
-                logBatalla += `\n💀 **${defensor.name} ha caído.** ¡${atacante.user} GANA!`;
+                // Intercambio
+                activePlayer.defenders[idx] = viejoAtacante;
+                activePlayer.attacker = nuevoAtacante;
 
-                // Actualizar mensaje final
-                const embedFin = getEmbed().setColor('#00FF00').setTitle(`👑 Victoria de ${atacante.user.username}`);
-                await interaction.update({ content: 'Batalla finalizada.', embeds: [embedFin], components: [] });
-                return;
+                // Reset de flags visuales para el nuevo atacante (por si acaso)
+                activePlayer.attacker.defMode = false;
+                activePlayer.imageBig = activePlayer.attacker.image;
+
+                log = `🔄 **${activePlayer.user.username}** cambia de líder.\n**${viejoAtacante.name}** se retira herido y entra **${nuevoAtacante.name}**.`;
+
+                turnoP1 = !turnoP1;
+                await i.deferUpdate();
+                continue; // Siguiente turno (del rival)
             }
 
-            // Cambiar turno
-            const temp = atacante;
-            atacante = defensor;
-            defensor = temp;
-            turno++;
+            // D) ATAQUE (Gasta Turno)
+            if (i.customId.startsWith('atk_')) {
+                let dmg = 0;
+                let desc = '';
+                if (i.customId === 'atk_normal') {
+                    dmg = activePlayer.attacker.stats.atk;
+                    desc = 'ataque básico';
+                } else {
+                    const mult = activePlayer.attacker.skills.atk.power;
+                    dmg = Math.floor(activePlayer.attacker.stats.atk * mult);
+                    desc = `**${activePlayer.attacker.skills.atk.name}**`;
+                }
 
-            await interaction.update({ content: `Turno ${turno}: le toca a ${atacante.user}`, embeds: [getEmbed()], components: [getRow()] });
+                opponent.attacker.currentHp -= dmg;
+                log = `⚔️ **${activePlayer.attacker.name}** usa ${desc} e inflige **${dmg}** de daño.`;
+
+                if (opponent.attacker.currentHp <= 0) {
+                    opponent.attacker.currentHp = 0;
+                    const embedWin = new EmbedBuilder()
+                        .setTitle('🏆 ¡Duelo Finalizado!')
+                        .setDescription(`🎉 **${activePlayer.user} gana la batalla.**\n\nEl líder ${opponent.attacker.name} ha caído.`)
+                        .setColor('#FFD700')
+                        .setImage(activePlayer.attacker.image);
+                    await i.update({ content: '', embeds: [embedWin], components: [] });
+                    db.addBalance(interaction.guild.id, activePlayer.user.id, 50);
+                    batallaActiva = false;
+                    break;
+                }
+
+                turnoP1 = !turnoP1;
+                await i.deferUpdate();
+            }
 
         } catch (e) {
-            finalizado = true;
-            await msgBatalla.edit({ content: '⏱️ Tiempo de espera agotado. Se acabó el combate.', components: [] });
+            batallaActiva = false;
+            await message.edit({ content: '⏱️ Tiempo agotado.', components: [] });
         }
     }
-}
-
-// Helpers
-function getFightersFromInv(inventory) {
-    const validos = [];
-    if (!inventory) return validos;
-    for (const slot of inventory) {
-        const item = itemsGacha.find(i => i.id === slot.item_id);
-        if (item) validos.push(item);
-    }
-    return validos;
-}
-
-function createSelectMenu(id, chars, placeholder) {
-    // Discord permite max 25 opciones en un select menu
-    const options = chars.slice(0, 25).map(c => ({
-        label: c.name,
-        description: `HP:${c.stats.hp} ATK:${c.stats.atk} | ${c.ability.name}`,
-        value: c.id,
-        emoji: c.emoji
-    }));
-
-    return new StringSelectMenuBuilder()
-        .setCustomId(id)
-        .setPlaceholder(placeholder)
-        .addOptions(options);
 }

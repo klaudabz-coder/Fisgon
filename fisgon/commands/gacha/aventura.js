@@ -1,370 +1,286 @@
-const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle, ComponentType } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, ComponentType } = require('discord.js');
 const db = require('../../database');
-const { getAllCards } = require('../../utils/cardRegistry'); 
-const { configRareza } = require('../../utils/gachaItems');
+const { getAllCards } = require('../../utils/cardRegistry');
 
-const TIEMPO_TURNO = 120000; 
-const RECOMPENSA_BASE = 50; 
-const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const TIEMPO_TURNO = 120000; // 2 minutos de espera máxima
 
 module.exports = {
   data: new SlashCommandBuilder()
-    .setName('cartas-aventura')
-    .setDescription('Lucha en modo aventura para cargar tu Atrapasueños')
-    .addStringOption(o => o.setName('dificultad').setDescription('Nivel del rival').addChoices({ name: 'Normal', value: 'normal' }, { name: 'Difícil', value: 'hard' })),
+    .setName('aventura')
+    .setDescription('Lucha contra la IA con tu equipo (1 Atacante + 3 Defensores)'),
 
   async execute(interaction) {
-    const dificultad = interaction.options.getString('dificultad') || 'normal';
     const user = interaction.user;
     const inv = db.getInventory(interaction.guild.id, user.id);
+    const allCards = getAllCards(interaction.guild.id);
 
-    // 1. Obtener TODAS las cartas del sistema (Originales + Custom)
-    const allGameCards = getAllCards(interaction.guild.id);
-
-    // 2. Filtrar cuáles tiene el usuario
+    // 1. Filtrar mis cartas
     const misCartas = [];
     for (const slot of inv) {
-        const item = allGameCards.find(c => c.id === slot.item_id);
+        const item = allCards.find(c => c.id === slot.item_id);
         if (item) misCartas.push(item);
     }
 
-    if (misCartas.length === 0) {
-        return interaction.reply({ content: '❌ No tienes cartas. Usa `/cartas-abrir` para conseguir algunas.', ephemeral: true });
-    }
+    if (misCartas.length === 0) return interaction.reply({ content: '❌ No tienes cartas. Crea una o compra sobres.', ephemeral: true });
 
-    // --- FASE 1: ELEGIR LUCHADOR ---
-    const rowFighter = new ActionRowBuilder().addComponents(createSelectMenu('sel_fighter', misCartas, 'Elige tu LUCHADOR principal'));
-    const cargaActual = db.getAdventureCharge(interaction.guild.id, user.id);
+    // --- FASE DE SELECCIÓN ---
+    const rowAtk = new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+            .setCustomId('sel_atk')
+            .setPlaceholder('1. Selecciona tu ATACANTE Principal')
+            .addOptions(misCartas.slice(0, 25).map(c => ({ label: c.name, description: `ATK: ${c.stats.atk}`, value: c.id })))
+    );
 
-    const msg = await interaction.reply({ 
-        content: `⚔️ **Modo Aventura** (Carga: ${cargaActual}%)\n🛡️ **Fase 1:** Selecciona quién peleará al frente.`, 
-        components: [rowFighter],
-        fetchReply: true
-    });
-
-    const filter = i => i.user.id === user.id;
-    let fighterItem, supportItem;
+    const msg = await interaction.reply({ content: '🛡️ **Fase 1:** Elige quién liderará el ataque.', components: [rowAtk], fetchReply: true });
 
     try {
-        const sel1 = await msg.awaitMessageComponent({ filter, componentType: ComponentType.StringSelect, time: 60000 });
-        fighterItem = allGameCards.find(c => c.id === sel1.values[0]);
-        await sel1.deferUpdate();
+        // Seleccionar Atacante
+        const iAtk = await msg.awaitMessageComponent({ filter: i => i.user.id === user.id, time: 60000, componentType: ComponentType.StringSelect });
+        const atacanteCard = misCartas.find(c => c.id === iAtk.values[0]);
+        await iAtk.deferUpdate();
 
-        // --- FASE 2: ELEGIR SOPORTE ---
-        const rowSupport = new ActionRowBuilder().addComponents(createSelectMenu('sel_support', misCartas, 'Elige tu SOPORTE (Opcional)'));
-        await msg.edit({ content: `✅ Luchador: **${fighterItem.name}**\n🔮 **Fase 2:** Elige una carta de apoyo.`, components: [rowSupport] });
+        // Paso 2: Elegir Defensores
+        const rowDef = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+                .setCustomId('sel_def')
+                .setPlaceholder('2. Selecciona hasta 3 DEFENSORES')
+                .setMinValues(0)
+                .setMaxValues(Math.min(3, misCartas.length))
+                .addOptions(misCartas.slice(0, 25).map(c => ({ label: c.name, description: `HP: ${c.stats.hp} | Skill: ${c.skills.def.name}`, value: c.id })))
+        );
 
-        try {
-            const sel2 = await msg.awaitMessageComponent({ filter, componentType: ComponentType.StringSelect, time: 60000 });
-            supportItem = allGameCards.find(c => c.id === sel2.values[0]);
-            await sel2.deferUpdate();
-        } catch (e) {
-            // Si no elige, va sin soporte
-        }
+        await msg.edit({ content: `✅ Atacante: **${atacanteCard.name}**\n🛡️ **Fase 2:** Elige tu equipo de defensa.`, components: [rowDef] });
 
-        // --- INICIAR ---
-        // El rival siempre es una carta que tenga rol 'fighter' (o cualquiera si es híbrida)
-        // Filtramos para que el NPC tenga stats de combate
-        const npcOptions = allGameCards.filter(c => c.stats && c.stats.hp > 0);
-        const npcCard = npcOptions[Math.floor(Math.random() * npcOptions.length)];
+        const iDef = await msg.awaitMessageComponent({ filter: i => i.user.id === user.id, time: 60000, componentType: ComponentType.StringSelect });
+        const defensoresCards = iDef.values.map(id => misCartas.find(c => c.id === id));
+        await iDef.deferUpdate();
 
-        await iniciarCombate(msg, user, fighterItem, supportItem, npcCard, dificultad, interaction, allGameCards);
+        // Generar Enemigo (IA)
+        const poolEnemigos = allCards.filter(c => c.stats && c.stats.hp > 0);
+        if (poolEnemigos.length === 0) return interaction.followUp({ content: '❌ No hay enemigos configurados.', ephemeral: true });
+        const enemigoCard = poolEnemigos[Math.floor(Math.random() * poolEnemigos.length)];
+
+        // INICIAR BATALLA
+        await iniciarBatalla(interaction, msg, user, atacanteCard, defensoresCards, enemigoCard);
 
     } catch (e) {
-        // console.error(e); // Descomentar para debug
-        await interaction.editReply({ content: 'Tiempo agotado.', components: [] }).catch(()=>{});
+        // console.error(e);
+        await interaction.editReply({ content: '⏳ Tiempo agotado.', components: [] }).catch(()=>{});
     }
   }
 };
 
-async function iniciarCombate(message, user, fighterCard, supportCard, npcCard, dificultad, interaction, allCards) {
-    const buff = dificultad === 'hard' ? 1.5 : 1.0;
-
-    // --- CONFIGURAR JUGADOR ---
+async function iniciarBatalla(interaction, message, user, cAtk, cDefs, cEnemy) {
+    // Configurar Jugador
     const player = {
-        name: fighterCard.name,
-        stats: { ...fighterCard.stats },
-        maxHp: fighterCard.stats.hp,
-        currentHp: fighterCard.stats.hp,
-        // Si la carta no tiene skills definidas, le damos un set básico
-        skills: fighterCard.skills ? fighterCard.skills.map(s => ({ ...s, currentCd: 0 })) : [{ name: 'Ataque', type: 'dmg', power: 1, cd: 0, desc: 'Básico' }],
-        buffs: { atk: 0, def: 0 },
-        shield: 0
+        attacker: { ...cAtk, maxHp: cAtk.stats.hp, currentHp: cAtk.stats.hp, defMode: false },
+        defenders: cDefs.map((c, i) => ({ ...c, id_game: i, usedTurn: false, maxHp: c.stats.hp, currentHp: c.stats.hp })),
+        imageBig: cAtk.image // Imagen a mostrar en el embed
     };
 
-    // --- CONFIGURAR SOPORTE & SINERGIA ---
-    let synergyMsg = "";
-    const support = supportCard ? {
-        name: supportCard.name,
-        skill: supportCard.assist ? { ...supportCard.assist, currentCd: 0 } : { name: 'Ayuda', type: 'heal', power: 20, cd: 3 }
-    } : null;
-
-    // Verificar Sinergia
-    if (support && supportCard.synergy && supportCard.synergy.target === fighterCard.id) {
-        synergyMsg = `\n⚡ **¡SINERGIA!** ${supportCard.synergy.name}: ${supportCard.synergy.desc}`;
-        // Aplicar bonos simples basados en texto (puedes hacerlo más complejo si quieres)
-        if (supportCard.synergy.desc.includes('ATK')) player.stats.atk += 30;
-        if (supportCard.synergy.desc.includes('HP')) { player.maxHp += 80; player.currentHp += 80; }
-    }
-
-    // --- CONFIGURAR NPC ---
-    const npc = {
-        name: `NPC ${npcCard.name}`,
-        stats: { 
-            hp: Math.floor(npcCard.stats.hp * buff),
-            atk: Math.floor(npcCard.stats.atk * buff),
-            def: Math.floor(npcCard.stats.def * buff),
-            spd: Math.floor(npcCard.stats.spd * buff)
-        },
-        maxHp: Math.floor(npcCard.stats.hp * buff),
-        currentHp: Math.floor(npcCard.stats.hp * buff),
-        skills: npcCard.skills ? npcCard.skills.map(s => ({ ...s, currentCd: 0 })) : [{ name: 'Golpe', type: 'dmg', power: 1, cd: 0 }],
-        buffs: { atk: 0, def: 0 },
-        shield: 0
+    // Configurar Enemigo
+    const enemy = {
+        name: cEnemy.name,
+        image: cEnemy.image,
+        maxHp: cEnemy.stats.hp,
+        hp: cEnemy.stats.hp,
+        atk: cEnemy.stats.atk,
+        skills: cEnemy.skills || { atk: {name:'Golpe', power:1}, def: {name:'Guardia', power:20} },
+        subtype: cEnemy.subtype || 'Normal',
+        defMode: false
     };
 
-    let turno = 1;
-    let log = `¡**${player.name}** vs **${npc.name}**!${synergyMsg}`;
+    let log = "¡Comienza la aventura!";
     let batallaActiva = true;
 
     while (batallaActiva) {
 
-        // 1. DIBUJAR INTERFAZ (Limpia)
         const embed = new EmbedBuilder()
-            .setTitle(`Combate - Turno ${turno}`)
-            .setDescription(log)
-            .setColor(dificultad === 'hard' ? '#FF4444' : '#44FF44')
-            .addFields(
-                { name: `🟢 ${player.name}`, value: `HP: ${player.currentHp}/${player.maxHp} ${player.shield > 0 ? `🛡️${player.shield}` : ''}\nATK: ${player.stats.atk + player.buffs.atk} DEF: ${player.stats.def + player.buffs.def}`, inline: true },
-                { name: `🔴 ${npc.name}`, value: `HP: ${npc.currentHp}/${npc.maxHp} ${npc.shield > 0 ? `🛡️${npc.shield}` : ''}`, inline: true }
-            );
+            .setTitle(`Batalla vs ${enemy.name} (${enemy.subtype})`)
+            .setColor('#2f3136')
+            .setImage(player.imageBig)
+            .setDescription(`
+                **Viendo:** ${player.imageBig === player.attacker.image ? 'Líder (Atacante)' : 'Carta Seleccionada'}
 
-        // 2. BOTONES CON INFORMACIÓN
-        const rowSkills = new ActionRowBuilder();
-        const currentAtk = player.stats.atk + player.buffs.atk;
+                ⚔️ **${player.attacker.name}** (Tú)
+                ❤️ HP: ${player.attacker.currentHp}/${player.attacker.maxHp}
 
-        player.skills.forEach((skill, index) => {
-            let labelInfo = "";
+                👾 **${enemy.name}** (Enemigo)
+                ❤️ HP: ${enemy.hp}/${enemy.maxHp}
 
-            // Cálculo visual de daño/cura para el botón
-            if (skill.type === 'dmg' || skill.type === 'pierce' || skill.type === 'magic') {
-                const dmgEst = Math.floor(currentAtk * skill.power);
-                labelInfo = `⚔️~${dmgEst}`;
-            } else if (skill.type === 'heal') {
-                labelInfo = `❤️+${skill.power}`;
-            } else if (skill.type === 'shield') {
-                labelInfo = `🛡️+${skill.power}`;
-            } else if (skill.type.startsWith('buff')) {
-                labelInfo = `✨Buff`;
-            } else if (skill.type.startsWith('debuff')) {
-                labelInfo = `❄️Debuff`;
-            }
+                📜 **Log:**
+                ${log}
+            `)
+            .setFooter({ text: 'Cambiar de líder consume tu turno.' });
 
-            const cdText = skill.currentCd > 0 ? ` (⏳${skill.currentCd})` : '';
-            // Label Final: "Nombre [Info] (CD)"
-            const finalLabel = `${skill.name} [${labelInfo}]${cdText}`;
+        // Estado visual del equipo en fields
+        let teamStatus = '';
+        player.defenders.forEach(d => {
+            teamStatus += `🛡️ **${d.name}**: ${d.currentHp} HP ${d.usedTurn ? '(Agotado)' : ''}\n`;
+        });
+        if(teamStatus) embed.addFields({ name: 'Banca / Defensores', value: teamStatus });
 
-            rowSkills.addComponents(
-                new ButtonBuilder()
-                    .setCustomId(`skill_${index}`)
-                    .setLabel(finalLabel)
-                    .setStyle(skill.currentCd > 0 ? ButtonStyle.Secondary : ButtonStyle.Primary)
-                    .setDisabled(skill.currentCd > 0)
+        // --- COMPONENTES ---
+        const rowAtk = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('atk_normal').setLabel('⚔️ Atacar').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('atk_skill').setLabel(`💥 ${player.attacker.skills.atk.name}`).setStyle(ButtonStyle.Danger)
+        );
+
+        const rowDef = new ActionRowBuilder();
+        player.defenders.forEach((d, i) => {
+            rowDef.addComponents(
+                new ButtonBuilder().setCustomId(`def_skill_${i}`).setLabel(`${d.skills.def.name}`).setStyle(ButtonStyle.Secondary).setDisabled(d.usedTurn)
             );
         });
 
-        // Botón Soporte
-        if (support) {
-            const sSkill = support.skill;
-            let labelInfo = "✨";
-            if (sSkill.type === 'heal') labelInfo = `❤️+${sSkill.power}`;
-            else if (sSkill.type === 'shield') labelInfo = `🛡️+${sSkill.power}`;
-            else if (sSkill.type === 'buff_atk') labelInfo = `⚔️Up`;
-            else if (sSkill.type === 'reduce_cd') labelInfo = `⬇️CD`;
+        // Menú Inspección
+        const opcionesInspect = [
+            { label: `Ver Atacante: ${player.attacker.name}`, value: 'view_atk', emoji: '⚔️' }
+        ];
+        player.defenders.forEach((d, i) => {
+            opcionesInspect.push({ label: `Ver Defensor: ${d.name}`, value: `view_def_${i}`, emoji: '🛡️' });
+        });
+        const rowInspect = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder().setCustomId('inspect_menu').setPlaceholder('👁️ Ver estadísticas').addOptions(opcionesInspect)
+        );
 
-            const cdText = sSkill.currentCd > 0 ? ` (⏳${sSkill.currentCd})` : '';
-            const finalLabel = `${support.name} [${labelInfo}]${cdText}`;
-
-            rowSkills.addComponents(
-                new ButtonBuilder()
-                    .setCustomId('support_assist')
-                    .setLabel(finalLabel)
-                    .setStyle(ButtonStyle.Success)
-                    .setDisabled(sSkill.currentCd > 0)
+        // Menú CAMBIO DE LÍDER (Solo si hay defensores)
+        let rowSwap = null;
+        if (player.defenders.length > 0) {
+            const opcionesSwap = player.defenders.map((d, i) => ({
+                label: `Relevar con: ${d.name}`,
+                description: `HP: ${d.currentHp} | Entra al ataque`,
+                value: `swap_${i}`,
+                emoji: '🔄'
+            }));
+            rowSwap = new ActionRowBuilder().addComponents(
+                new StringSelectMenuBuilder().setCustomId('swap_menu').setPlaceholder('🔄 Relevar Líder (Gasta Turno)').addOptions(opcionesSwap)
             );
         }
 
-        await message.edit({ content: '', embeds: [embed], components: [rowSkills] });
+        const componentes = [rowAtk];
+        if (rowDef.components.length > 0) componentes.push(rowDef);
+        componentes.push(rowInspect);
+        if (rowSwap) componentes.push(rowSwap);
 
-        // 3. TURNO JUGADOR
+        await message.edit({ content: '', embeds: [embed], components: componentes });
+
         try {
-            const iAction = await message.awaitMessageComponent({ filter: i => i.user.id === user.id, time: TIEMPO_TURNO });
+            const i = await message.awaitMessageComponent({ filter: x => x.user.id === user.id, time: TIEMPO_TURNO });
 
-            let actionLog = '';
-
-            if (iAction.customId.startsWith('skill_')) {
-                const idx = parseInt(iAction.customId.split('_')[1]);
-                actionLog = ejecutarHabilidad(player.skills[idx], player, npc);
-                player.skills[idx].currentCd = player.skills[idx].cd + 1;
-            } 
-            else if (iAction.customId === 'support_assist') {
-                actionLog = `🔮 **Apoyo:** ${ejecutarHabilidad(support.skill, player, npc)}`;
-                support.skill.currentCd = support.skill.cd + 1;
+            // A) INSPECCIÓN
+            if (i.customId === 'inspect_menu') {
+                const val = i.values[0];
+                if (val === 'view_atk') player.imageBig = player.attacker.image;
+                else {
+                    const idx = parseInt(val.split('_')[2]);
+                    player.imageBig = player.defenders[idx].image;
+                }
+                await i.deferUpdate();
+                continue;
             }
 
-            await iAction.update({ components: [] }); 
+            // B) HABILIDAD DEFENSA (Gratis)
+            if (i.customId.startsWith('def_skill_')) {
+                const idx = parseInt(i.customId.split('_')[2]);
+                const defensor = player.defenders[idx];
+                const poder = defensor.skills.def.power;
 
-            // Verificar Victoria
-            if (npc.currentHp <= 0) {
+                player.attacker.currentHp += Math.floor(poder / 2);
+                if(player.attacker.currentHp > player.attacker.maxHp) player.attacker.currentHp = player.attacker.maxHp;
+
+                defensor.usedTurn = true;
+                log = `🛡️ **${defensor.name}** usa *${defensor.skills.def.name}* para curar al líder.`;
+                await i.deferUpdate();
+                continue;
+            }
+
+            // --- ACCIONES QUE GASTAN TURNO (ATAQUE O SWAP) ---
+            let playerActionLog = '';
+
+            // C) SWAP (Cambio de líder)
+            if (i.customId === 'swap_menu') {
+                const idx = parseInt(i.values[0].split('_')[1]);
+                const nuevoAtacante = player.defenders[idx];
+                const viejoAtacante = player.attacker;
+
+                // Intercambio
+                player.defenders[idx] = viejoAtacante;
+                player.attacker = nuevoAtacante;
+
+                // Actualizar visuales
+                player.imageBig = player.attacker.image;
+                player.attacker.defMode = false; // El nuevo atacante entra sin guardia
+
+                playerActionLog = `🔄 **Cambio táctico:** ${viejoAtacante.name} se retira y entra **${nuevoAtacante.name}**.`;
+            }
+
+            // D) ATAQUE NORMAL
+            else if (i.customId.startsWith('atk_')) {
+                let dmg = 0;
+                let skillName = '';
+
+                if (i.customId === 'atk_normal') {
+                    dmg = player.attacker.stats.atk;
+                    skillName = 'un ataque básico';
+                } else {
+                    const mult = player.attacker.skills.atk.power;
+                    dmg = Math.floor(player.attacker.stats.atk * mult);
+                    skillName = `**${player.attacker.skills.atk.name}**`;
+                }
+
+                // Reducción si el enemigo estaba defendiendo (IA simple)
+                if (enemy.defMode) {
+                    dmg = Math.floor(dmg * 0.5);
+                    enemy.defMode = false; // Rompe guardia
+                }
+
+                enemy.hp -= dmg;
+                playerActionLog = `⚔️ **${player.attacker.name}** usa ${skillName} e inflige **${dmg}** daño.`;
+            }
+
+            // --- RESOLUCIÓN DEL TURNO ---
+
+            // 1. Verificar Victoria
+            if (enemy.hp <= 0) {
+                await i.update({ content: '🏆 **¡VICTORIA!** Enemigo derrotado.', components: [], embeds: [] });
+                db.addBalance(interaction.guild.id, user.id, 100);
                 batallaActiva = false;
-                await finalizarBatalla(message, interaction, user, true, dificultad, actionLog, allCards);
-                return;
+                break;
             }
 
-            // 4. TURNO NPC
-            await wait(1500);
+            // 2. Turno del Enemigo (IA)
+            // IA Simple: 20% defensa, 80% ataque
+            let enemyLog = '';
+            if (Math.random() < 0.2) {
+                enemy.defMode = true;
+                enemyLog = `🛡️ **${enemy.name}** se pone en posición defensiva.`;
+            } else {
+                let dmgEnemy = enemy.atk;
+                // Si la IA usa skill (50% chance)
+                if (Math.random() < 0.5) dmgEnemy = Math.floor(dmgEnemy * enemy.skills.atk.power);
 
-            // IA Simple: Elige skill disponible al azar
-            const availableSkills = npc.skills.filter(s => s.currentCd === 0);
-            const npcSkill = availableSkills.length > 0 
-                ? availableSkills[Math.floor(Math.random() * availableSkills.length)]
-                : { name: 'Cansado', type: 'wait', desc: 'Recuperando aliento' }; 
+                player.attacker.currentHp -= dmgEnemy;
+                enemyLog = `👾 **${enemy.name}** ataca e inflige **${dmgEnemy}** daño a tu líder.`;
+            }
 
-            const npcLog = ejecutarHabilidad(npcSkill, npc, player);
-            if (npcSkill.cd) npcSkill.currentCd = npcSkill.cd + 1;
-
-            log = `${actionLog}\n${npcLog}`;
-
-            // Verificar Derrota
-            if (player.currentHp <= 0) {
+            // 3. Verificar Derrota
+            if (player.attacker.currentHp <= 0) {
+                await i.update({ content: `💀 **DERROTA...** Tu líder ${player.attacker.name} ha caído.`, components: [], embeds: [] });
                 batallaActiva = false;
-                await finalizarBatalla(message, interaction, user, false, dificultad, log, allCards);
-                return;
+                break;
             }
 
-            // 5. FIN DE TURNO (Cooldowns)
-            reducirCooldowns(player.skills);
-            if (support) reducirCooldowns([support.skill]);
-            reducirCooldowns(npc.skills);
+            // 4. Preparar siguiente turno
+            log = `${playerActionLog}\n${enemyLog}`;
+            player.defenders.forEach(d => d.usedTurn = false); // Reset skills defensores
 
-            turno++;
+            await i.deferUpdate();
 
         } catch (e) {
-            console.log(e);
+            console.error(e);
             batallaActiva = false;
             await message.edit({ content: '⏳ Tiempo agotado.', components: [] });
         }
     }
-}
-
-// Lógica de efectos
-function ejecutarHabilidad(skill, caster, target) {
-    let msg = `**${caster.name}** usó *${skill.name}*...`;
-
-    const atk = caster.stats.atk + (caster.buffs?.atk || 0);
-    const def = target.stats.def + (target.buffs?.def || 0);
-
-    switch (skill.type) {
-        case 'dmg':
-            let dmg = Math.floor((atk * skill.power) - (def * 0.3));
-            if (dmg < 1) dmg = 1;
-            if (target.shield > 0) {
-                const absorb = Math.min(target.shield, dmg);
-                target.shield -= absorb;
-                dmg -= absorb;
-                msg += ` (Escudo -${absorb})`;
-            }
-            if (dmg > 0) { target.currentHp -= dmg; msg += ` ¡${dmg} daño!`; }
-            else if (target.shield > 0) msg += ` ¡Bloqueado!`;
-            break;
-
-        case 'heal':
-            const heal = skill.power;
-            caster.currentHp = Math.min(caster.maxHp, caster.currentHp + heal);
-            msg += ` +${heal} HP.`;
-            break;
-
-        case 'shield':
-            caster.shield = (caster.shield || 0) + skill.power;
-            msg += ` +${skill.power} Escudo.`;
-            break;
-
-        case 'buff_atk':
-            caster.buffs.atk += skill.power;
-            msg += ` +${skill.power} ATK.`;
-            break;
-
-        case 'buff_def':
-            caster.buffs.def += skill.power;
-            msg += ` +${skill.power} DEF.`;
-            break;
-
-        case 'debuff_spd':
-            msg += ` ralentizó al rival.`;
-            break;
-
-        case 'reduce_cd':
-            msg += ` redujo tiempos.`;
-            break;
-
-        default:
-            msg += ` ...pero no pasó nada.`;
-    }
-    return msg;
-}
-
-function reducirCooldowns(skills) {
-    skills.forEach(s => {
-        if (s.currentCd > 0) s.currentCd--;
-    });
-}
-
-async function finalizarBatalla(message, interaction, user, victoria, dificultad, logFinal, allCards) {
-    const embed = new EmbedBuilder()
-        .setDescription(logFinal)
-        .setTimestamp();
-
-    if (victoria) {
-        const premio = dificultad === 'hard' ? RECOMPENSA_BASE * 2 : RECOMPENSA_BASE;
-        db.addBalance(interaction.guild.id, user.id, premio);
-
-        const cargaBase = dificultad === 'hard' ? 35 : 20;
-        const nuevaCarga = db.addAdventureCharge(interaction.guild.id, user.id, cargaBase);
-        let extraMsg = '';
-
-        // PREMIO POR LLENAR BARRA
-        if (nuevaCarga >= 100) {
-            db.setAdventureCharge(interaction.guild.id, user.id, nuevaCarga - 100);
-
-            // Carta premio: Intentar que no sea común
-            const poolPremio = allCards.filter(c => c.rarity !== 'Common');
-            const carta = poolPremio.length > 0 
-                ? poolPremio[Math.floor(Math.random() * poolPremio.length)]
-                : allCards[0];
-
-            db.addToInventory(interaction.guild.id, user.id, carta.id, 1);
-            extraMsg = `\n✨ **¡ATRAPASUEÑOS AL MÁXIMO!**\nLa energía acumulada invocó a: **${carta.name}**`;
-        }
-
-        embed.setTitle('🏆 ¡VICTORIA!')
-             .setColor('#00FF00')
-             .addFields({ name: 'Recompensas', value: `💰 +${premio} monedas\n🕸️ Carga: ${nuevaCarga}% (+${cargaBase}%)${extraMsg}` });
-    } else {
-        embed.setTitle('💀 DERROTA')
-             .setColor('#FF0000')
-             .setFooter({ text: 'No ganas recompensas esta vez.' });
-    }
-
-    await message.edit({ embeds: [embed], components: [] });
-}
-
-function createSelectMenu(id, chars, placeholder) {
-    // Discord max 25 options
-    const options = chars.slice(0, 25).map(c => ({
-        label: c.name,
-        description: `HP:${c.stats.hp} ATK:${c.stats.atk}`,
-        value: c.id,
-        emoji: c.emoji || '🃏'
-    }));
-    return new StringSelectMenuBuilder().setCustomId(id).setPlaceholder(placeholder).addOptions(options);
 }
