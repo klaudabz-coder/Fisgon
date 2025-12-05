@@ -211,5 +211,45 @@ module.exports = {
     const out = [];
     for (const v of caches.custom_cards.values()) if (v.guild_id === guildId) out.push(v);
     return out;
+  },
+
+  // --- SISTEMA TCG: ATRAPASUEÑOS Y SOBRES GRATIS ---
+
+  getDreamcatcher(guildId, userId) {
+    const key = `${guildId}_${userId}`;
+    // Reutilizamos la colección 'adventure'
+    const data = caches.adventure.get(key) || { guild_id: guildId, user_id: userId, charge: 0, free_packs: 0 };
+    return data;
+  },
+
+  addDreamCharge(guildId, userId, amount) {
+    const key = `${guildId}_${userId}`;
+    const cur = this.getDreamcatcher(guildId, userId);
+
+    cur.charge = (cur.charge || 0) + amount;
+
+    let packsGained = 0;
+    // Cada 100% de carga = 1 Sobre Gratis
+    while (cur.charge >= 100) {
+        cur.charge -= 100;
+        cur.free_packs = (cur.free_packs || 0) + 1;
+        packsGained++;
+    }
+
+    caches.adventure.set(key, cur);
+    persistDoc('adventure', key, cur);
+    return { newCharge: cur.charge, packsGained, totalPacks: cur.free_packs };
+  },
+
+  useFreePack(guildId, userId) {
+    const key = `${guildId}_${userId}`;
+    const cur = this.getDreamcatcher(guildId, userId);
+    if (cur.free_packs > 0) {
+        cur.free_packs--;
+        caches.adventure.set(key, cur);
+        persistDoc('adventure', key, cur);
+        return true;
+    }
+    return false;
   }
 };
