@@ -19,7 +19,8 @@ const caches = {
   level_config: new Map(),
   adventure: new Map(),
   card_sets: new Map(),
-  custom_cards: new Map()
+  custom_cards: new Map(),
+  decks: new Map() // <--- NUEVO: Caché para barajas
 };
 
 let firestore = null;
@@ -60,7 +61,8 @@ async function init() {
         loadCollectionToCache('level_config', caches.level_config, doc => doc.id),
         loadCollectionToCache('adventure', caches.adventure, keyFromDocEconomy),
         loadCollectionToCache('card_sets', caches.card_sets, doc => doc.id),
-        loadCollectionToCache('custom_cards', caches.custom_cards, doc => doc.id)
+        loadCollectionToCache('custom_cards', caches.custom_cards, doc => doc.id),
+        loadCollectionToCache('decks', caches.decks, doc => doc.id) // <--- NUEVO: Cargar barajas
       ]);
       console.log('ℹ️  [DB] Caches loaded.');
     }
@@ -248,6 +250,40 @@ module.exports = {
         cur.free_packs--;
         caches.adventure.set(key, cur);
         persistDoc('adventure', key, cur);
+        return true;
+    }
+    return false;
+  },
+
+  // --- NUEVO: SISTEMA DE BARAJAS (DECKS) ---
+  saveDeck(guildId, userId, slotNumber, cardIds) {
+    const key = `${guildId}_${userId}_slot${slotNumber}`;
+    const obj = { 
+        id: key, 
+        guild_id: guildId, 
+        user_id: userId, 
+        slot: slotNumber, 
+        cards: cardIds 
+    };
+    caches.decks.set(key, obj);
+    persistDoc('decks', key, obj);
+  },
+
+  getDecks(guildId, userId) {
+    const out = [];
+    for (const v of caches.decks.values()) {
+        if (v.guild_id === guildId && v.user_id === userId) {
+            out.push(v);
+        }
+    }
+    return out.sort((a, b) => a.slot - b.slot);
+  },
+
+  deleteDeck(guildId, userId, slotNumber) {
+    const key = `${guildId}_${userId}_slot${slotNumber}`;
+    if (caches.decks.has(key)) {
+        caches.decks.delete(key);
+        deleteDoc('decks', key);
         return true;
     }
     return false;
