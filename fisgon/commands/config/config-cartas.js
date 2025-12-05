@@ -2,6 +2,7 @@ const { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder
 const db = require('../../database');
 
 module.exports = {
+  // 1. DEFINICIÓN DEL COMANDO (DATA)
   data: new SlashCommandBuilder()
     .setName('config-cartas')
     .setDescription('Gestión de Cartas TCG')
@@ -11,9 +12,32 @@ module.exports = {
         .addStringOption(o => o.setName('nombre').setDescription('Nombre visible').setRequired(true))
         .addIntegerOption(o => o.setName('precio').setDescription('Precio del sobre').setRequired(true))
     )
-    .addSubcommand(sub => sub.setName('carta-borrar').setDescription('Elimina una carta por ID').addStringOption(o => o.setName('id').setDescription('ID de la carta').setRequired(true)))
+    .addSubcommand(sub => sub.setName('carta-borrar').setDescription('Elimina una carta')
+        .addStringOption(o => o.setName('id').setDescription('Busca la carta por nombre').setRequired(true).setAutocomplete(true))
+    )
+    // ESTA LÍNEA DEBE IR PEGADA AL BUILDER (Sin comas antes de ella)
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
+  // 2. FUNCIÓN DE AUTOCOMPLETADO
+  async autocomplete(interaction) {
+    const focusedOption = interaction.options.getFocused(true);
+
+    if (focusedOption.name === 'id') {
+        const guildId = interaction.guild.id;
+        const customCards = db.getCustomCards(guildId);
+        const busqueda = focusedOption.value.toLowerCase();
+
+        // Filtramos por nombre
+        const filtradas = customCards.filter(c => c.name.toLowerCase().includes(busqueda));
+
+        // Respondemos con máximo 25 opciones
+        await interaction.respond(
+            filtradas.slice(0, 25).map(c => ({ name: c.name, value: c.id }))
+        );
+    }
+  },
+
+  // 3. EJECUCIÓN DEL COMANDO
   async execute(interaction) {
     const sub = interaction.options.getSubcommand();
     const guildId = interaction.guild.id;
@@ -30,7 +54,7 @@ module.exports = {
     if (sub === 'carta-borrar') {
         const id = interaction.options.getString('id');
         const res = db.deleteCustomCard(guildId, id);
-        return interaction.reply({ content: res ? '🗑️ Carta eliminada.' : '❌ ID no encontrado.' });
+        return interaction.reply({ content: res ? '🗑️ Carta eliminada correctamente.' : '❌ No se encontró una carta con ese ID.' });
     }
 
     // --- WIZARD DE CREACIÓN DE CARTAS ---
@@ -75,7 +99,7 @@ module.exports = {
                 spd: 10
             };
 
-            // PASO 3: SELECCIÓN DE RAREZA (Nuevo)
+            // PASO 3: SELECCIÓN DE RAREZA
             const rowRareza = new ActionRowBuilder().addComponents(
                 new StringSelectMenuBuilder().setCustomId('w_rarity').setPlaceholder('Selecciona la Rareza').addOptions([
                     { label: 'Común', value: 'Common', description: 'Alta probabilidad en sobres', emoji: '⚪' },
@@ -126,11 +150,13 @@ module.exports = {
             const iModalSkill = await iSkill.awaitModalSubmit({ time: 60000, filter });
 
             skillConfig.name = iModalSkill.fields.getTextInputValue('sn');
-            const val = iModalSkill.fields.getTextInputValue('val');
 
-            if (sType === 'dmg') skillConfig.power = parseFloat(val);
-            if (sType === 'heal') skillConfig.power = parseInt(val);
-            if (sType === 'immunity') skillConfig.targetSubtype = val;
+            if (sType !== 'agility') {
+                const val = iModalSkill.fields.getTextInputValue('val');
+                if (sType === 'dmg') skillConfig.power = parseFloat(val);
+                if (sType === 'heal') skillConfig.power = parseInt(val);
+                if (sType === 'immunity') skillConfig.targetSubtype = val;
+            }
 
             cartaTemp.skills.push(skillConfig);
             cartaTemp.emoji = '🃏';

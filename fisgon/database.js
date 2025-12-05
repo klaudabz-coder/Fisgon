@@ -20,7 +20,7 @@ const caches = {
   adventure: new Map(),
   card_sets: new Map(),
   custom_cards: new Map(),
-  decks: new Map() // <--- NUEVO: Caché para barajas
+  decks: new Map()
 };
 
 let firestore = null;
@@ -62,7 +62,7 @@ async function init() {
         loadCollectionToCache('adventure', caches.adventure, keyFromDocEconomy),
         loadCollectionToCache('card_sets', caches.card_sets, doc => doc.id),
         loadCollectionToCache('custom_cards', caches.custom_cards, doc => doc.id),
-        loadCollectionToCache('decks', caches.decks, doc => doc.id) // <--- NUEVO: Cargar barajas
+        loadCollectionToCache('decks', caches.decks, doc => doc.id)
       ]);
       console.log('ℹ️  [DB] Caches loaded.');
     }
@@ -158,8 +158,6 @@ module.exports = {
   addAdventureCharge(guildId, userId, amount) { const key = `${guildId}_${userId}`; const cur = caches.adventure.get(key) || { guild_id: guildId, user_id: userId, charge: 0 }; cur.charge = (cur.charge || 0) + amount; caches.adventure.set(key, cur); persistDoc('adventure', key, cur); return cur.charge; },
   setAdventureCharge(guildId, userId, amount) { const key = `${guildId}_${userId}`; const cur = caches.adventure.get(key) || { guild_id: guildId, user_id: userId }; cur.charge = amount; caches.adventure.set(key, cur); persistDoc('adventure', key, cur); },
 
-  // --- GESTIÓN DE SETS Y CARTAS (MEJORADO) ---
-
   createSet(guildId, setId, name, price) {
     const key = `${guildId}_${setId}`;
     const obj = { guild_id: guildId, id: setId, name, price, type: 'set' };
@@ -180,7 +178,6 @@ module.exports = {
   },
 
   createCustomCard(guildId, cardData) {
-    // ID único: custom_TIMESTAMP_RANDOM
     const cardId = `custom_${Date.now()}_${Math.floor(Math.random()*1000)}`;
     const obj = { guild_id: guildId, id: cardId, ...cardData };
     caches.custom_cards.set(cardId, obj);
@@ -191,8 +188,6 @@ module.exports = {
   updateCustomCard(guildId, cardId, newData) {
     const current = caches.custom_cards.get(cardId);
     if (!current || current.guild_id !== guildId) return null;
-
-    // Fusionar datos (asegurando que el ID no cambie)
     const updated = { ...current, ...newData, id: cardId };
     caches.custom_cards.set(cardId, updated);
     persistDoc('custom_cards', cardId, updated);
@@ -215,11 +210,8 @@ module.exports = {
     return out;
   },
 
-  // --- SISTEMA TCG: ATRAPASUEÑOS Y SOBRES GRATIS ---
-
   getDreamcatcher(guildId, userId) {
     const key = `${guildId}_${userId}`;
-    // Reutilizamos la colección 'adventure'
     const data = caches.adventure.get(key) || { guild_id: guildId, user_id: userId, charge: 0, free_packs: 0 };
     return data;
   },
@@ -227,17 +219,13 @@ module.exports = {
   addDreamCharge(guildId, userId, amount) {
     const key = `${guildId}_${userId}`;
     const cur = this.getDreamcatcher(guildId, userId);
-
     cur.charge = (cur.charge || 0) + amount;
-
     let packsGained = 0;
-    // Cada 100% de carga = 1 Sobre Gratis
     while (cur.charge >= 100) {
         cur.charge -= 100;
         cur.free_packs = (cur.free_packs || 0) + 1;
         packsGained++;
     }
-
     caches.adventure.set(key, cur);
     persistDoc('adventure', key, cur);
     return { newCharge: cur.charge, packsGained, totalPacks: cur.free_packs };
@@ -255,7 +243,6 @@ module.exports = {
     return false;
   },
 
-  // --- NUEVO: SISTEMA DE BARAJAS (DECKS) ---
   saveDeck(guildId, userId, slotNumber, cardIds) {
     const key = `${guildId}_${userId}_slot${slotNumber}`;
     const obj = { 
@@ -287,5 +274,18 @@ module.exports = {
         return true;
     }
     return false;
+  },
+
+  // --- NUEVA FUNCIÓN PARA EL TOP DE NIVELES ---
+  getTopLevels(guildId) {
+    const out = [];
+    for (const v of caches.levels.values()) {
+      if (v.guild_id === guildId) {
+        out.push({ user_id: v.user_id, xp: v.xp, level: v.level });
+      }
+    }
+    // Ordenar por XP descendente
+    out.sort((a, b) => b.xp - a.xp);
+    return out.slice(0, 10); // Devolver solo el top 10
   }
 };
