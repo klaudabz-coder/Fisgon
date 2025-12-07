@@ -2,7 +2,7 @@ const { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, ActionRowBuilder
 const db = require('../../database');
 
 module.exports = {
-  // 1. DEFINICIÓN DEL COMANDO (DATA)
+  // 1. DEFINICIÓN DEL COMANDO
   data: new SlashCommandBuilder()
     .setName('config-cartas')
     .setDescription('Gestión de Cartas TCG')
@@ -15,29 +15,35 @@ module.exports = {
     .addSubcommand(sub => sub.setName('carta-borrar').setDescription('Elimina una carta')
         .addStringOption(o => o.setName('id').setDescription('Busca la carta por nombre').setRequired(true).setAutocomplete(true))
     )
-    // ESTA LÍNEA DEBE IR PEGADA AL BUILDER (Sin comas antes de ella)
+    // --- NUEVO SUBCOMANDO: EDITAR ---
+    .addSubcommand(sub => sub.setName('carta-editar').setDescription('Edita una carta existente')
+        .addStringOption(o => o.setName('id').setDescription('Busca la carta a editar').setRequired(true).setAutocomplete(true))
+        .addStringOption(o => o.setName('nuevo_nombre').setDescription('Nuevo nombre (Opcional)').setRequired(false))
+        .addIntegerOption(o => o.setName('nueva_hp').setDescription('Nueva vida (Opcional)').setRequired(false))
+        .addIntegerOption(o => o.setName('nuevo_atk').setDescription('Nuevo ataque (Opcional)').setRequired(false))
+        .addStringOption(o => o.setName('nueva_imagen').setDescription('Nueva URL de imagen (Opcional)').setRequired(false))
+    )
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
-  // 2. FUNCIÓN DE AUTOCOMPLETADO
+  // 2. AUTOCOMPLETADO
   async autocomplete(interaction) {
     const focusedOption = interaction.options.getFocused(true);
 
+    // El autocompletado funciona para 'carta-borrar' y 'carta-editar'
     if (focusedOption.name === 'id') {
         const guildId = interaction.guild.id;
         const customCards = db.getCustomCards(guildId);
         const busqueda = focusedOption.value.toLowerCase();
 
-        // Filtramos por nombre
         const filtradas = customCards.filter(c => c.name.toLowerCase().includes(busqueda));
 
-        // Respondemos con máximo 25 opciones
         await interaction.respond(
             filtradas.slice(0, 25).map(c => ({ name: c.name, value: c.id }))
         );
     }
   },
 
-  // 3. EJECUCIÓN DEL COMANDO
+  // 3. EJECUCIÓN
   async execute(interaction) {
     const sub = interaction.options.getSubcommand();
     const guildId = interaction.guild.id;
@@ -57,7 +63,51 @@ module.exports = {
         return interaction.reply({ content: res ? '🗑️ Carta eliminada correctamente.' : '❌ No se encontró una carta con ese ID.' });
     }
 
-    // --- WIZARD DE CREACIÓN DE CARTAS ---
+    // --- NUEVA LÓGICA: EDITAR CARTA ---
+    if (sub === 'carta-editar') {
+        const id = interaction.options.getString('id');
+        const nuevoNombre = interaction.options.getString('nuevo_nombre');
+        const nuevaHp = interaction.options.getInteger('nueva_hp');
+        const nuevoAtk = interaction.options.getInteger('nuevo_atk');
+        const nuevaImg = interaction.options.getString('nueva_imagen');
+
+        // Buscar la carta actual
+        const currentCards = db.getCustomCards(guildId);
+        const carta = currentCards.find(c => c.id === id);
+
+        if (!carta) {
+            return interaction.reply({ content: '❌ No encontré esa carta. Asegúrate de seleccionarla del menú.', ephemeral: true });
+        }
+
+        // Preparar objeto de actualización
+        const updateData = {};
+        let cambios = [];
+
+        if (nuevoNombre) { updateData.name = nuevoNombre; cambios.push('Nombre'); }
+        if (nuevaImg) { updateData.image = nuevaImg; cambios.push('Imagen'); }
+
+        // Para los stats, necesitamos fusionarlos con los existentes
+        if (nuevaHp || nuevoAtk) {
+            updateData.stats = {
+                ...carta.stats, // Mantiene lo que no cambie
+                hp: nuevaHp || carta.stats.hp,
+                atk: nuevoAtk || carta.stats.atk
+            };
+            if (nuevaHp) cambios.push('HP');
+            if (nuevoAtk) cambios.push('ATK');
+        }
+
+        if (Object.keys(updateData).length === 0) {
+            return interaction.reply({ content: '⚠️ No has especificado ningún cambio.', ephemeral: true });
+        }
+
+        // Guardar cambios
+        db.updateCustomCard(guildId, id, updateData);
+
+        return interaction.reply({ content: `✅ **Carta Actualizada:** ${carta.name}\n📝 Cambios: ${cambios.join(', ')}.` });
+    }
+
+    // --- WIZARD DE CREACIÓN DE CARTAS (Tu código corregido anteriormente) ---
     if (sub === 'crear-wizard') {
         const sets = db.getSets(guildId);
         if (sets.length === 0) return interaction.reply({ content: '❌ Primero crea un Set usando `/config-cartas set-crear`.', ephemeral: true });
@@ -81,18 +131,18 @@ module.exports = {
             const modalBasic = new ModalBuilder().setCustomId('w_modal_basic').setTitle('Datos de la Carta');
             modalBasic.addComponents(
                 new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('n').setLabel('Nombre').setStyle(TextInputStyle.Short).setRequired(true)),
+                new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('type').setLabel('Tipo (Elemento/Rol)').setStyle(TextInputStyle.Short).setPlaceholder('Ej: Fuego, Guerrero').setRequired(true)),
+                new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('sub').setLabel('Subtipo (Raza/Clase)').setStyle(TextInputStyle.Short).setPlaceholder('Ej: Dragón...').setRequired(true)),
                 new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('hp').setLabel('Vida (HP)').setStyle(TextInputStyle.Short).setPlaceholder('Ej: 200').setRequired(true)),
-                new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('atk').setLabel('Ataque (ATK)').setStyle(TextInputStyle.Short).setPlaceholder('Ej: 50').setRequired(true)),
-                new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('sub').setLabel('Subtipo (Raza/Clase)').setStyle(TextInputStyle.Short).setPlaceholder('Fuego, Guerrero...').setRequired(true)),
-                new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('img').setLabel('URL Imagen').setStyle(TextInputStyle.Short).setRequired(true))
+                new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('atk').setLabel('Ataque (ATK)').setStyle(TextInputStyle.Short).setPlaceholder('Ej: 50').setRequired(true))
             );
 
             await iSet.showModal(modalBasic);
             const iModal = await iSet.awaitModalSubmit({ time: 120000, filter });
 
             cartaTemp.name = iModal.fields.getTextInputValue('n');
+            cartaTemp.type = iModal.fields.getTextInputValue('type');
             cartaTemp.subtype = iModal.fields.getTextInputValue('sub');
-            cartaTemp.image = iModal.fields.getTextInputValue('img');
             cartaTemp.stats = {
                 hp: parseInt(iModal.fields.getTextInputValue('hp')),
                 atk: parseInt(iModal.fields.getTextInputValue('atk')),
@@ -102,15 +152,15 @@ module.exports = {
             // PASO 3: SELECCIÓN DE RAREZA
             const rowRareza = new ActionRowBuilder().addComponents(
                 new StringSelectMenuBuilder().setCustomId('w_rarity').setPlaceholder('Selecciona la Rareza').addOptions([
-                    { label: 'Común', value: 'Common', description: 'Alta probabilidad en sobres', emoji: '⚪' },
+                    { label: 'Común', value: 'Common', description: 'Alta probabilidad', emoji: '⚪' },
                     { label: 'Rara', value: 'Rare', description: 'Probabilidad media', emoji: '🔵' },
                     { label: 'Épica', value: 'Epic', description: 'Probabilidad baja', emoji: '🟣' },
-                    { label: 'Legendaria', value: 'Legendary', description: 'Muy difícil de conseguir', emoji: '🟡' }
+                    { label: 'Legendaria', value: 'Legendary', description: 'Muy difícil', emoji: '🟡' }
                 ])
             );
 
             await iModal.reply({ 
-                content: `✅ Datos guardados.\n📊 **Paso 3:** Elige la rareza (Solo afecta la probabilidad de que salga).`, 
+                content: `✅ Datos básicos guardados.\n📊 **Paso 3:** Elige la rareza.`, 
                 components: [rowRareza], 
                 ephemeral: true 
             });
@@ -138,9 +188,10 @@ module.exports = {
             const sType = iSkill.values[0];
             const skillConfig = { type: sType };
 
-            // PASO 5: DETALLE HABILIDAD (Modal)
-            const modalSkill = new ModalBuilder().setCustomId('w_modal_skill').setTitle('Detalle Habilidad');
+            // PASO 5: DETALLE HABILIDAD + IMAGEN
+            const modalSkill = new ModalBuilder().setCustomId('w_modal_skill').setTitle('Detalle Final');
             modalSkill.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('sn').setLabel('Nombre de Habilidad').setStyle(TextInputStyle.Short).setRequired(true)));
+            modalSkill.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('img').setLabel('URL Imagen Carta').setStyle(TextInputStyle.Short).setRequired(true)));
 
             if (sType === 'dmg') modalSkill.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('val').setLabel('Multiplicador (ej: 1.5)').setStyle(TextInputStyle.Short).setRequired(true)));
             if (sType === 'immunity') modalSkill.addComponents(new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('val').setLabel('Subtipo bloqueado').setStyle(TextInputStyle.Short).setRequired(true)));
@@ -150,6 +201,7 @@ module.exports = {
             const iModalSkill = await iSkill.awaitModalSubmit({ time: 60000, filter });
 
             skillConfig.name = iModalSkill.fields.getTextInputValue('sn');
+            cartaTemp.image = iModalSkill.fields.getTextInputValue('img');
 
             if (sType !== 'agility') {
                 const val = iModalSkill.fields.getTextInputValue('val');
@@ -161,12 +213,10 @@ module.exports = {
             cartaTemp.skills.push(skillConfig);
             cartaTemp.emoji = '🃏';
 
-            // GUARDAR EN BASE DE DATOS
             const created = db.createCustomCard(guildId, cartaTemp);
-
             const embed = new EmbedBuilder()
                 .setTitle('¡Carta Creada!')
-                .setDescription(`**${created.name}**\nRareza: ${created.rarity}\nSet: ${created.set}\nHP: ${created.stats.hp} | ATK: ${created.stats.atk}\nHabilidad: ${skillConfig.name}`)
+                .setDescription(`**${created.name}**\nTipo: ${created.type}\nSubtipo: ${created.subtype}\nRareza: ${created.rarity}\nSet: ${created.set}\nHP: ${created.stats.hp} | ATK: ${created.stats.atk}\nHabilidad: ${skillConfig.name}`)
                 .setImage(created.image)
                 .setColor('#00FF00');
 
